@@ -1,0 +1,13 @@
+# Ignorer les données lourdes
+*.csv
+*.zip
+*.pt
+
+# Ignorer les environnements virtuels et caches
+.venv/
+env/
+__pycache__/
+.ipynb_checkpoints/
+
+# Ignorer les fichiers systèmes
+.DS_Store
