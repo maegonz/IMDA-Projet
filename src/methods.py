@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 from torch import nn, optim
 from torch.utils.data import DataLoader
 
-def train(model: nn.Module,
+def train_model(model: nn.Module,
           train_loader: DataLoader,
           criterion,
           optimizer: optim.Optimizer,
@@ -39,7 +39,7 @@ def train(model: nn.Module,
     plt.show()
 
 
-def evaluate(model: nn.Module,
+def evaluate_model(model: nn.Module,
              test_loader: DataLoader,
              criterion):
     model.eval()
