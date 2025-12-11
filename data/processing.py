@@ -1,15 +1,16 @@
 import numpy as np
 import pandas as pd
-import torch
 import glob
 import os
-import matplotlib.pyplot as plt
-import matplotlib.animation as animation
-import matplotlib.patches as patches
-from tqdm import tqdm
-from IPython.display import HTML
-from matplotlib.lines import Line2D
 
+
+# --- CONSTANTES ---
+HISTORY_SIZE = 10
+MAX_SPEED = 13.0
+MAX_ACCEL = 10.0
+MAX_DIST = 50.0
+NUM_FRAMES = 10
+MAX_ANGLE = 360.0
 
 def load_all_data(folder_path):
     # 1. Charger tous les inputs
@@ -38,4 +39,21 @@ def get_angle_features(degree_val):
     rad = np.radians(degree_val)
     return np.sin(rad), np.cos(rad)
 
+def normalisation(queries, keys, labels):
+        # --- NORMALISATION ---
+        # Query: [Speed, Dir, DistX, DistY]
+        queries[0] /= MAX_SPEED   # Speed (max ~10)
+        queries[1] /= MAX_ANGLE  # Dir
+        queries[2] /= MAX_DIST   # DistX (max ~50)
+        queries[3] /= MAX_DIST   # DistY
 
+        # Keys: [RelX, RelY, Speed, Dir]
+        keys[:, 0] /= MAX_DIST
+        keys[:, 1] /= MAX_DIST
+        keys[:, 2] /= MAX_SPEED
+        keys[:, 3] /= MAX_ANGLE
+
+        # Label: [dX, dY] (Déplacement sur 10 frames, env 10 yards max)
+        labels /= NUM_FRAMES
+
+        return queries, keys, labels
