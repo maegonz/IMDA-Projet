@@ -40,7 +40,7 @@ def get_angle_features(degree_val):
     rad = np.radians(degree_val)
     return np.sin(rad), np.cos(rad)
 
-def normalisation(queries, keys, labels):
+def normalisation(queries, keys, labels=None):
         # --- NORMALISATION ---
         # Query: [Speed, Dir, DistX, DistY]
         queries[0] /= MAX_SPEED   # Speed (max ~10)
@@ -54,8 +54,9 @@ def normalisation(queries, keys, labels):
         keys[:, 2] /= MAX_SPEED
         keys[:, 3] /= MAX_ANGLE
 
-        # Label: [dX, dY] (Déplacement sur 10 frames, env 10 yards max)
-        labels /= NUM_FRAMES
+        if labels is not None:
+            # Label: [dX, dY] (Déplacement sur 10 frames, env 10 yards max)
+            labels /= NUM_FRAMES # 10 frames = 1 seconde
 
         return queries, keys, labels
 
