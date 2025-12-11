@@ -70,8 +70,8 @@ def limit(x, y):
 def movement_correction(dx: float, 
                         dy: float, 
                         play_direction: bool, 
-                        direction: float,  
-                        ball: None):
+                        direction: Union[float, None]=None,  
+                        ball=None):
     
     if ball is not None:
         if play_direction == 'left':
