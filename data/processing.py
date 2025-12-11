@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 import glob
 import os
+from typing import Union
 
 
 # --- CONSTANTES ---
@@ -57,3 +58,28 @@ def normalisation(queries, keys, labels):
         labels /= NUM_FRAMES
 
         return queries, keys, labels
+
+def limit(x, y):
+    limit_x, limit_y = 120, 53.3  # Field dimensions in yards
+
+    x = limit_x - x
+    y = limit_y - y
+    return x, y
+
+def movement_correction(dx: float, 
+                        dy: float, 
+                        play_direction: bool, 
+                        direction: float,  
+                        ball: None):
+    
+    if ball is not None:
+        if play_direction == 'left':
+            # Ball's position correction
+            dx, dy = limit(dx, dy)
+            return dx, dy
+
+    if play_direction == 'left':
+        dx, dy = limit(dx, dy)
+        direction = (direction + 180) % MAX_ANGLE
+        return dx, dy, direction
+    return dx, dy, direction
