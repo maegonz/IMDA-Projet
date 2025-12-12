@@ -179,7 +179,7 @@ class NFLDataset(Dataset):
             if future_track.empty:
                 continue
 
-            future_pos = future_track.iloc[-1]
+            future_pos = future_track.iloc[-1]  # Only last output retrieval
             label = torch.tensor(
                 [future_pos["x"] - current_pos["x"], future_pos["y"] - current_pos["y"]],
                 dtype=torch.float32,
