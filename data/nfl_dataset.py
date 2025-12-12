@@ -372,3 +372,7 @@ class NFLDataset(Dataset):
         # They are minimal holders of the preprocessed tensors for training/testing.
 
         return train_dataset, test_dataset
+    
+
+    def __getcachefile__(self):
+        return self.cache_file
