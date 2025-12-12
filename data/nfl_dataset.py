@@ -330,3 +330,45 @@ class NFLDataset(Dataset):
         label_flip[1] *= -1
 
         return query_flip, keys_flip, label_flip
+    
+    def _split(self, ratio: float=0.8):
+        """Split the dataset into training and testing subsets.
+
+        Parameters
+        ----------
+        ratio : float, default 0.8
+            Proportion of data to allocate to the training set.
+
+        Returns
+        -------
+        Tuple[NFLDataset, NFLDataset]
+            Training and testing dataset instances.
+        """
+        assert len(self) > 0, "Dataset is empty, cannot split."
+        total_samples = len(self)
+        # Compute train/test sizes and shuffle indices for a random split
+        train_size = int(total_samples * ratio)
+        indices = torch.randperm(total_samples)
+
+        # Partition the shuffled indices into train and test
+        train_indices = indices[:train_size]
+        test_indices = indices[train_size:]
+
+        # Create lightweight dataset views without rebuilding or caching
+        # Using __new__ avoids running __init__; we only attach tensors below
+        train_dataset = NFLDataset.__new__(NFLDataset)
+        test_dataset = NFLDataset.__new__(NFLDataset)
+
+        # Slice tensors according to each split to form independent subsets
+        train_dataset.queries = self.queries[train_indices]
+        train_dataset.keys = self.keys[train_indices]
+        train_dataset.labels = self.labels[train_indices]
+
+        test_dataset.queries = self.queries[test_indices]
+        test_dataset.keys = self.keys[test_indices]
+        test_dataset.labels = self.labels[test_indices]
+
+        # Note: these split datasets don't carry cache settings or input paths.
+        # They are minimal holders of the preprocessed tensors for training/testing.
+
+        return train_dataset, test_dataset
