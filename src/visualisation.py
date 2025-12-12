@@ -10,6 +10,7 @@ from IPython.display import HTML
 from typing import List
 from matplotlib.lines import Line2D
 from data.processing import get_angle_features, HISTORY_SIZE, MAX_SPEED, MAX_ACCEL, MAX_DIST
+from .utils import prepare_input, prepare_test_input
 
 
 def _animate_core(
