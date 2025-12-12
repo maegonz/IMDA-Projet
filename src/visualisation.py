@@ -1,3 +1,5 @@
+from typing import Dict, List, Optional, Tuple
+
 import pandas as pd
 import glob
 import os
@@ -11,8 +13,110 @@ from matplotlib.lines import Line2D
 from data.processing import get_angle_features, HISTORY_SIZE, MAX_SPEED, MAX_ACCEL, MAX_DIST
 
 
-def get_player_historic(df, game_id, play_id, nfl_id):
-    """Fetch the last HISTORY_SIZE frames for a player in a given play.
+def _pad_and_tensorize_keys(keys_list: List[List[float]], max_len: int = 22, feature_dim: int = 9):
+    """
+    Pad context features to a fixed length and return as tensor.
+
+    Parameters
+    ----------
+    keys_list : list of list of float
+        Per-player context features.
+    max_len : int, default 22
+        Target number of context players (padded with zeros when fewer).
+    feature_dim : int, default 9
+        Number of features per player.
+
+    Returns
+    -------
+    torch.Tensor
+        Tensor of shape (1, max_len, feature_dim).
+    """
+    while len(keys_list) < max_len:
+        keys_list.append([0.0] * feature_dim)
+
+    return torch.tensor(keys_list[:max_len], dtype=torch.float32).unsqueeze(0)
+
+
+def _prepare_core_input(df, game_id, play_id, target_nfl_id, num_frames_out=False):
+    """
+    Shared core function for preparing model inputs.
+    Used by both training and testing wrappers.
+    """
+    # Filter play data
+    play_data, history_seq = _player_historic(df, game_id, play_id, target_nfl_id)
+    if history_seq is None:
+        return None, None, None, None if num_frames_out else (None, None, None)
+    
+    # Full play data for context lookups
+    current_pos = history_seq.iloc[-1]  # Last frame (T)
+
+    # --- A. Build receiver query (flattened history) ---
+    # Expected size: 90 (HISTORY_SIZE * 9 features)
+    rec_features = []
+    ball_x, ball_y = current_pos['ball_land_x'], current_pos['ball_land_y']
+    is_offense = 1.0 if current_pos['player_side'] == 'Offense' else 0.0
+
+    for _, row in history_seq.iterrows():
+        sin_d, cos_d = get_angle_features(row['dir'])
+        sin_o, cos_o = get_angle_features(row['o'])
+
+        rec_features.extend([
+            row['s'] / MAX_SPEED,
+            row['a'] / MAX_ACCEL,
+            sin_d, cos_d,
+            sin_o, cos_o,
+            (ball_x - row['x']) / MAX_DIST,
+            (ball_y - row['y']) / MAX_DIST,
+            is_offense  # Feature 9: offense flag for target
+        ])
+
+    query = torch.tensor(rec_features, dtype=torch.float32).unsqueeze(0)
+
+    # --- B. Build context keys (teammates + opponents at last frame) ---
+    current_frame_id = current_pos['frame_id']
+    others = play_data[(play_data['frame_id'] == current_frame_id) & 
+                       (play_data['nfl_id'] != target_nfl_id)]
+
+    keys_list = []  # List[List[float]] for context players
+    side_target = current_pos['player_side']
+
+    for _, other in others.iterrows():
+        sin_d, cos_d = get_angle_features(other['dir'])
+        sin_o, cos_o = get_angle_features(other['o'])
+
+        is_teammate = 1.0 if other['player_side'] == side_target else 0.0
+
+        keys_list.append([
+            (other['x'] - current_pos['x']) / MAX_DIST,
+            (other['y'] - current_pos['y']) / MAX_DIST,
+            other['s'] / MAX_SPEED,
+            other['a'] / MAX_ACCEL,
+            sin_d, cos_d,
+            sin_o, cos_o,
+            is_teammate
+        ])
+
+    # Pad to 22 context players (max seen in play)
+    keys = _pad_and_tensorize_keys(keys_list, max_len=22, feature_dim=9)  # (1, 22, 9)
+    
+    # Absolute starting position for visualization
+    start_pos = (current_pos['x'], current_pos['y'])
+
+    # Optional: number of future frames to predict
+    if num_frames_out:
+        num_frames_out = int(current_pos['num_frames_output'])
+        return query, keys, start_pos, num_frames_out
+
+    return query, keys, start_pos
+
+
+def _player_historic(
+        df: pd.DataFrame,
+        game_id: int,
+        play_id: int,
+        nfl_id: int):
+    """
+    Fetch the last HISTORY_SIZE frames for a player in a given play.
 
     Parameters
     ----------
@@ -32,18 +136,21 @@ def get_player_historic(df, game_id, play_id, nfl_id):
     """
     # Filter full play frames ordered by time
     play_data = df[(df['game_id'] == game_id) & (df['play_id'] == play_id)].sort_values('frame_id')
-    # Collect target player's history
+    # Player track
     player_track = play_data[play_data['nfl_id'] == nfl_id]
-    
+
     if len(player_track) < HISTORY_SIZE:
         return None
-    
-    history_seq = player_track.iloc[-HISTORY_SIZE:]
-    return history_seq
 
-# --- 1. FONCTION DE PRÉPARATION V4 (Cruciale) ---
-def prepare_input_v4(df, game_id, play_id, target_nfl_id):
-    """Build model inputs (history + context) for a target player.
+    return play_data, player_track.iloc[-HISTORY_SIZE:]
+
+def prepare_input(
+        df: pd.DataFrame,
+        game_id: int,
+        play_id: int,
+        target_nfl_id: int):
+    """
+    Build model inputs (history + context) for a target player.
 
     Parameters
     ----------
@@ -62,75 +169,43 @@ def prepare_input_v4(df, game_id, play_id, target_nfl_id):
         (query, keys, start_pos) where ``query`` is shape (1, 90), ``keys`` is
         shape (1, 22, 9), and ``start_pos`` is the absolute (x, y) starting point.
         Returns (None, None, None) when insufficient history.
-    """        
-    # Input sequence: last HISTORY_SIZE frames
-    history_seq = get_player_historic(df, game_id, play_id, target_nfl_id)
-    current_pos = history_seq.iloc[-1]  # Last frame (T)
-    
-    # --- A. Build receiver query (flattened history) ---
-    # Expected size: 90 (HISTORY_SIZE * 9 features)
-    rec_features = []
-    ball_x, ball_y = current_pos['ball_land_x'], current_pos['ball_land_y']
-    
-    is_offense = 1.0 if current_pos['player_side'] == 'Offense' else 0.0
-    
-    for _, row in history_seq.iterrows():
-        sin_d, cos_d = get_angle_features(row['dir'])
-        sin_o, cos_o = get_angle_features(row['o'])
-        
-        feats = [
-            row['s'] / MAX_SPEED,
-            row['a'] / MAX_ACCEL,
-            sin_d, cos_d,
-            sin_o, cos_o,
-            (ball_x - row['x']) / MAX_DIST,
-            (ball_y - row['y']) / MAX_DIST,
-            is_offense  # Feature 9: offense flag for target
-        ]
-        rec_features.extend(feats)
-        
-    query = torch.tensor(rec_features, dtype=torch.float32).unsqueeze(0)  # (1, 90)
+    """
+    return _prepare_core_input(df, game_id, play_id, target_nfl_id)
 
-    # --- B. Build context keys (teammates + opponents at last frame) ---
-    current_frame_id = current_pos['frame_id']
-    others = play_data[(play_data['frame_id'] == current_frame_id) & (play_data['nfl_id'] != target_nfl_id)]
-    
-    keys_list = []
-    side_target = current_pos['player_side']
-    
-    for _, other_row in others.iterrows():
-        sin_d, cos_d = get_angle_features(other_row['dir'])
-        sin_o, cos_o = get_angle_features(other_row['o'])
-        
-        is_teammate = 1.0 if other_row['player_side'] == side_target else 0.0
-        
-        k_feats = [
-            (other_row['x'] - current_pos['x']) / MAX_DIST,
-            (other_row['y'] - current_pos['y']) / MAX_DIST,
-            other_row['s'] / MAX_SPEED,
-            other_row['a'] / MAX_ACCEL,
-            sin_d, cos_d,
-            sin_o, cos_o,
-            is_teammate  # Feature 9: teammate flag
-        ]
-        keys_list.append(k_feats)
-    
-    # Pad to 22 context players (max seen in play)
-    while len(keys_list) < 22:
-        keys_list.append([0.0] * 9)
-        
-    keys = torch.tensor(keys_list[:22], dtype=torch.float32).unsqueeze(0)  # (1, 22, 9)
-    
-    # Absolute starting position for visualization
-    start_pos = (current_pos['x'], current_pos['y'])
-    
-    return query, keys, start_pos
 
-# --- 2. FONCTION D'ANIMATION FINALE ---
-def animate_prediction_v4(model, df_in, df_out, game_id, play_id):
+def prepare_test_input(
+        df: pd.DataFrame,
+        game_id: int,
+        play_id: int,
+        target_nfl_id: int):
+    """
+    Prepare model inputs for test scenarios without known outputs.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        Tracking dataframe containing the play inputs.
+    game_id : int
+        Game identifier to filter rows.
+    play_id : int
+        Play identifier to filter rows.
+    target_nfl_id : int
+        Player identifier whose future path is predicted.
+
+    Returns
+    -------
+    tuple
+        (query, keys, start_pos, num_frames_out) or (None, None, None, None) when
+        insufficient history. ``query`` shape: (1, 90); ``keys`` shape: (1, 22, 9);
+        ``start_pos``: absolute (x, y); ``num_frames_out``: frames to predict.
+    """    
+    return _prepare_core_input(df, game_id, play_id, target_nfl_id, num_frames_out=True)
+
+
+def animate_prediction(model, df_in, df_out, game_id, play_id):
     """Animate model predictions versus ground truth for a given play."""
 
-    print(f"🔍 Visualisation V4 | Game {game_id} Play {play_id}")
+    print(f"🔍 Visualisation | Game {game_id} Play {play_id}")
     play_in = df_in[(df_in['game_id'] == game_id) & (df_in['play_id'] == play_id)]
     play_out_full = df_out[(df_out['game_id'] == game_id) & (df_out['play_id'] == play_id)]
     
@@ -160,8 +235,8 @@ def animate_prediction_v4(model, df_in, df_out, game_id, play_id):
         real_track = play_out_full[play_out_full['nfl_id'] == nid].sort_values('frame_id')
         real_trajectories[nid] = real_track
         
-        # Model prediction using V4 inputs
-        query, keys, start_pos = prepare_input_v4(df_in, game_id, play_id, nid)
+        # Model prediction using inputs
+        query, keys, start_pos = prepare_input(df_in, game_id, play_id, nid)
         
         if query is not None:
             with torch.no_grad():
@@ -263,81 +338,6 @@ def animate_prediction_v4(model, df_in, df_out, game_id, play_id):
     return HTML(ani.to_jshtml())
 
 
-# --- 1. PRÉPARATION INPUT TEST (Sans Output) ---
-def prepare_test_input(df, game_id, play_id, target_nfl_id):
-    """Prepare model inputs for test scenarios without known outputs.
-
-    Parameters
-    ----------
-    df : pandas.DataFrame
-        Tracking dataframe containing the play inputs.
-    game_id : int
-        Game identifier to filter rows.
-    play_id : int
-        Play identifier to filter rows.
-    target_nfl_id : int
-        Player identifier whose future path is predicted.
-
-    Returns
-    -------
-    tuple
-        (query, keys, start_pos, num_frames_out) or (None, None, None, None) when
-        insufficient history. ``query`` shape: (1, 90); ``keys`` shape: (1, 22, 9);
-        ``start_pos``: absolute (x, y); ``num_frames_out``: frames to predict.
-    """
-    play_data = df[(df['game_id'] == game_id) & (df['play_id'] == play_id)].sort_values('frame_id')
-    player_track = play_data[play_data['nfl_id'] == target_nfl_id]
-    
-    if len(player_track) < HISTORY_SIZE: return None, None, None, None
-        
-    # Input Sequence
-    history_seq = player_track.iloc[-HISTORY_SIZE:]
-    current_pos = history_seq.iloc[-1]
-    
-    # 1. Query (90 features)
-    rec_features = []
-    ball_x, ball_y = current_pos['ball_land_x'], current_pos['ball_land_y']
-    is_offense = 1.0 if current_pos['player_side'] == 'Offense' else 0.0
-    
-    for _, row in history_seq.iterrows():
-        sin_d, cos_d = get_angle_features(row['dir'])
-        sin_o, cos_o = get_angle_features(row['o'])
-        feats = [
-            row['s'] / MAX_SPEED, row['a'] / MAX_ACCEL,
-            sin_d, cos_d, sin_o, cos_o,
-            (ball_x - row['x']) / MAX_DIST, (ball_y - row['y']) / MAX_DIST,
-            is_offense
-        ]
-        rec_features.extend(feats)
-    query = torch.tensor(rec_features, dtype=torch.float32).unsqueeze(0)
-
-    # 2. Keys (context at current frame)
-    current_frame_id = current_pos['frame_id']
-    others = play_data[(play_data['frame_id'] == current_frame_id) & (play_data['nfl_id'] != target_nfl_id)]
-    keys_list = []
-    side_target = current_pos['player_side']
-    
-    for _, other_row in others.iterrows():
-        sin_d, cos_d = get_angle_features(other_row['dir'])
-        sin_o, cos_o = get_angle_features(other_row['o'])
-        is_teammate = 1.0 if other_row['player_side'] == side_target else 0.0
-        k_feats = [
-            (other_row['x'] - current_pos['x']) / MAX_DIST, (other_row['y'] - current_pos['y']) / MAX_DIST,
-            other_row['s'] / MAX_SPEED, other_row['a'] / MAX_ACCEL,
-            sin_d, cos_d, sin_o, cos_o, is_teammate
-        ]
-        keys_list.append(k_feats)
-    
-    # Pad context to 22 players
-    while len(keys_list) < 22: keys_list.append([0.0] * 9)
-    keys = torch.tensor(keys_list[:22], dtype=torch.float32).unsqueeze(0)
-    
-    start_pos = (current_pos['x'], current_pos['y'])
-    # On récupère le nombre de frames à prédire (spécifique au test set)
-    num_frames_out = int(current_pos['num_frames_output'])
-    
-    return query, keys, start_pos, num_frames_out
-
 # --- 2. ANIMATION TEST ---
 def animate_test_prediction(model, test_input_df, test_df, game_id, play_id):
     """Animate predictions on test inputs where targets are unknown at runtime."""
@@ -346,7 +346,8 @@ def animate_test_prediction(model, test_input_df, test_df, game_id, play_id):
     
     # Filter inputs for the requested play
     play_in = test_input_df[(test_input_df['game_id'] == game_id) & (test_input_df['play_id'] == play_id)]
-    if play_in.empty: return print("❌ Input vide.")
+    if play_in.empty:
+        return print("❌ Empty input.")
 
     # Determine players to predict (prefer test.csv, fallback to player_to_predict flag)
     # Option 1: use test.csv if available
@@ -355,9 +356,9 @@ def animate_test_prediction(model, test_input_df, test_df, game_id, play_id):
     targets_in_input = play_in[play_in['player_to_predict'] == True]['nfl_id'].unique()
     
     players_to_predict = targets_in_test_file if len(targets_in_test_file) > 0 else targets_in_input
-    print(f"   -> {len(players_to_predict)} joueurs à prédire.")
+    print(f"   -> {len(players_to_predict)} players to predict.")
 
-    # Ballon
+    # Ball location
     ball_x, ball_y = play_in['ball_land_x'].iloc[0], play_in['ball_land_y'].iloc[0]
 
     # Colors per player based on side and prediction target
@@ -366,9 +367,9 @@ def animate_test_prediction(model, test_input_df, test_df, game_id, play_id):
         info = play_in[play_in['nfl_id'] == nid].iloc[0]
         side = info['player_side']
         if nid in players_to_predict:
-            player_colors[nid] = '#FFD700' if side == 'Offense' else '#FF00FF' # Gold / Magenta
+            player_colors[nid] = '#FFD700' if side == 'Offense' else '#FF00FF'  # Gold / Magenta
         else:
-            player_colors[nid] = '#1f77b4' if side == 'Offense' else '#d62728' # Bleu / Rouge
+            player_colors[nid] = '#1f77b4' if side == 'Offense' else '#d62728'  # Blue / Red
 
     # --- PREDICTIONS ---
     ai_trajectories = {}
