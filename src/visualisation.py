@@ -1,4 +1,4 @@
-from typing import Dict, List, Optional, Tuple
+from typing import List
 
 import pandas as pd
 import glob
@@ -15,21 +15,26 @@ from data.processing import get_angle_features, HISTORY_SIZE, MAX_SPEED, MAX_ACC
 
 def _pad_and_tensorize_keys(keys_list: List[List[float]], max_len: int = 22, feature_dim: int = 9):
     """
-    Pad context features to a fixed length and return as tensor.
+    Pad a variable-length list of per-player context features to a fixed
+    length and convert it into a model-ready tensor.
+
+    This ensures the keys tensor always has shape ``(1, max_len, feature_dim)``
+    by zero-padding when fewer than ``max_len`` players are present and
+    truncating when more.
 
     Parameters
     ----------
-    keys_list : list of list of float
-        Per-player context features.
+    keys_list : list[list[float]]
+        Context features for each non-target player at the reference frame.
     max_len : int, default 22
-        Target number of context players (padded with zeros when fewer).
+        Fixed number of context players to represent.
     feature_dim : int, default 9
-        Number of features per player.
+        Number of features per player key.
 
     Returns
     -------
     torch.Tensor
-        Tensor of shape (1, max_len, feature_dim).
+        Padded/truncated keys tensor of shape ``(1, max_len, feature_dim)``.
     """
     while len(keys_list) < max_len:
         keys_list.append([0.0] * feature_dim)
@@ -39,8 +44,33 @@ def _pad_and_tensorize_keys(keys_list: List[List[float]], max_len: int = 22, fea
 
 def _prepare_core_input(df, game_id, play_id, target_nfl_id, num_frames_out=False):
     """
-    Shared core function for preparing model inputs.
-    Used by both training and testing wrappers.
+    Build model inputs for a target player from tracking data.
+
+    Constructs the receiver query by flattening the last ``HISTORY_SIZE``
+    frames and the context keys from all other players at the final history
+    frame. Optionally returns the number of output frames when available
+    (for test-time inputs).
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        Tracking dataframe containing the play.
+    game_id : int
+        Game identifier.
+    play_id : int
+        Play identifier.
+    target_nfl_id : int
+        Player (target) identifier.
+    num_frames_out : bool, default False
+        When True, also return ``num_frames_out`` read from the current row.
+
+    Returns
+    -------
+    tuple
+        If ``num_frames_out`` is False: ``(query, keys, start_pos)``.
+        If True: ``(query, keys, start_pos, num_frames_out)``.
+        Returns ``(None, None, None)`` or ``(None, None, None, None)`` if
+        insufficient history for the target player.
     """
     # Filter play data
     play_data, history_seq = _player_historic(df, game_id, play_id, target_nfl_id)
@@ -116,23 +146,27 @@ def _player_historic(
         play_id: int,
         nfl_id: int):
     """
-    Fetch the last HISTORY_SIZE frames for a player in a given play.
+    Retrieve the full play slice and the target player's recent history.
+
+    Filters the play rows by ``game_id`` and ``play_id``, then returns
+    the last ``HISTORY_SIZE`` frames for ``nfl_id`` if available.
 
     Parameters
     ----------
     df : pandas.DataFrame
-        Full tracking dataframe containing the play.
+        Full tracking dataframe.
     game_id : int
-        Game identifier to filter rows.
+        Game identifier.
     play_id : int
-        Play identifier to filter rows.
+        Play identifier.
     nfl_id : int
-        Player identifier whose history is requested.
+        Target player identifier.
 
     Returns
     -------
-    pandas.DataFrame or None
-        The last ``HISTORY_SIZE`` frames for the player, or ``None`` when not enough history.
+    tuple[pandas.DataFrame, pandas.DataFrame] or None
+        ``(play_data, player_history)`` when sufficient history exists;
+        otherwise ``None``.
     """
     # Filter full play frames ordered by time
     play_data = df[(df['game_id'] == game_id) & (df['play_id'] == play_id)].sort_values('frame_id')
@@ -150,25 +184,19 @@ def prepare_input(
         play_id: int,
         target_nfl_id: int):
     """
-    Build model inputs (history + context) for a target player.
+    Convenience wrapper to prepare training/inference inputs for a player.
 
-    Parameters
-    ----------
-    df : pandas.DataFrame
-        Tracking dataframe with input play data.
-    game_id : int
-        Game identifier to filter rows.
-    play_id : int
-        Play identifier to filter rows.
-    target_nfl_id : int
-        Player identifier to prepare inputs for.
+    Builds the query and keys tensors for ``target_nfl_id`` within the given
+    ``game_id`` and ``play_id``. Intended for cases where output length is
+    determined by ground-truth and not required in inputs.
 
     Returns
     -------
     tuple
-        (query, keys, start_pos) where ``query`` is shape (1, 90), ``keys`` is
-        shape (1, 22, 9), and ``start_pos`` is the absolute (x, y) starting point.
-        Returns (None, None, None) when insufficient history.
+        ``(query, keys, start_pos)`` where ``query`` has shape ``(1, 90)``,
+        ``keys`` has shape ``(1, 22, 9)``, and ``start_pos`` is the absolute
+        ``(x, y)`` position at the last history frame. Returns
+        ``(None, None, None)`` when insufficient history.
     """
     return _prepare_core_input(df, game_id, play_id, target_nfl_id)
 
@@ -179,292 +207,313 @@ def prepare_test_input(
         play_id: int,
         target_nfl_id: int):
     """
-    Prepare model inputs for test scenarios without known outputs.
+    Prepare inputs for test-time prediction including output length.
 
-    Parameters
-    ----------
-    df : pandas.DataFrame
-        Tracking dataframe containing the play inputs.
-    game_id : int
-        Game identifier to filter rows.
-    play_id : int
-        Play identifier to filter rows.
-    target_nfl_id : int
-        Player identifier whose future path is predicted.
+    Similar to ``prepare_input`` but also returns ``num_frames_out`` derived
+    from the final history row, representing how many future frames to
+    predict for the target player.
 
     Returns
     -------
     tuple
-        (query, keys, start_pos, num_frames_out) or (None, None, None, None) when
-        insufficient history. ``query`` shape: (1, 90); ``keys`` shape: (1, 22, 9);
-        ``start_pos``: absolute (x, y); ``num_frames_out``: frames to predict.
+        ``(query, keys, start_pos, num_frames_out)`` or ``(None, None, None, None)``
+        when insufficient history. ``query`` shape: ``(1, 90)``; ``keys`` shape:
+        ``(1, 22, 9)``; ``start_pos``: absolute ``(x, y)``; ``num_frames_out``:
+        integer count of future frames to generate.
     """    
     return _prepare_core_input(df, game_id, play_id, target_nfl_id, num_frames_out=True)
 
 
-def animate_prediction(model, df_in, df_out, game_id, play_id):
-    """Animate model predictions versus ground truth for a given play."""
 
-    print(f"🔍 Visualisation | Game {game_id} Play {play_id}")
-    play_in = df_in[(df_in['game_id'] == game_id) & (df_in['play_id'] == play_id)]
-    play_out_full = df_out[(df_out['game_id'] == game_id) & (df_out['play_id'] == play_id)]
-    
-    if play_in.empty: return print("❌ Error: empty input.")
 
-    # Ballon
-    ball_x, ball_y = play_in['ball_land_x'].iloc[0], play_in['ball_land_y'].iloc[0]
-    players_to_predict = play_out_full['nfl_id'].unique()
-    
-    # Colors per player depending on side and prediction target
-    player_colors = {}
-    for nid in play_in['nfl_id'].unique():
-        info = play_in[play_in['nfl_id'] == nid].iloc[0]
-        side = info['player_side']
-        if nid in players_to_predict:
-            player_colors[nid] = '#FFD700' if side == 'Offense' else '#FF00FF' # Gold / Magenta
-        else:
-            player_colors[nid] = '#1f77b4' if side == 'Offense' else '#d62728' # Bleu / Rouge
-
-    # --- PREDICTIONS ---
-    ai_trajectories = {} 
-    real_trajectories = {} 
-    model.eval()
-    
-    for nid in players_to_predict:
-        # Ground truth trajectory
-        real_track = play_out_full[play_out_full['nfl_id'] == nid].sort_values('frame_id')
-        real_trajectories[nid] = real_track
-        
-        # Model prediction using inputs
-        query, keys, start_pos = prepare_input(df_in, game_id, play_id, nid)
-        
-        if query is not None:
-            with torch.no_grad():
-                pred, _ = model(query, keys)
-            
-            # Denormalization: assume label was a raw yard offset (adjust if scaled)
-            dx = pred[0, 0].item() 
-            dy = pred[0, 1].item()
-            
-            pred_x = start_pos[0] + dx
-            pred_y = start_pos[1] + dy
-            
-            steps = len(real_track)
-            if steps > 0:
-                ai_xs = np.linspace(start_pos[0], pred_x, steps)
-                ai_ys = np.linspace(start_pos[1], pred_y, steps)
-                ai_trajectories[nid] = (ai_xs, ai_ys)
-
-    # --- FIGURE SETUP ---
+def _animate_core(
+        play_in,
+        players_to_predict,
+        player_colors,
+        ball_x,
+        ball_y,
+        trajectories_pred,
+        trajectories_real=None,
+        title_prefix="",
+        output_name="animation.html"):
+    """
+    Core animation engine shared by training/test visualization.
+    """
     fig, ax = plt.subplots(figsize=(12, 6))
     ax.set_facecolor('#004d00')
     ax.set_xlim(0, 120)
     ax.set_ylim(0, 53.3)
-    for x in range(10, 111, 10): ax.axvline(x, color='white', alpha=0.15)
-    
-    # Ball marker
-    ball_marker = ax.scatter([ball_x], [ball_y], marker='X', s=200, c='white', edgecolors='black', zorder=20)
-    
-    # Legend
-    legend_elements = [
-        Line2D([0], [0], marker='X', color='w', markeredgecolor='k', label='Ballon'),
-        Line2D([0], [0], color='#FFD700', lw=4, alpha=0.5, label='Vrai (Att)'),
-        Line2D([0], [0], color='#FFD700', lw=2, linestyle='--', label='IA (Att)'),
-        Line2D([0], [0], color='#FF00FF', lw=4, alpha=0.5, label='Vrai (Def)'),
-        Line2D([0], [0], color='#FF00FF', lw=2, linestyle='--', label='IA (Def)'),
-    ]
-    ax.legend(handles=legend_elements, loc='upper right', facecolor='black', labelcolor='white')
 
-    # Scatter and line objects for animation
+    # Field grid lines
+    for x in range(10, 111, 10):
+        ax.axvline(x, color='white', alpha=0.15)
+
+    # Ball marker
+    ball_marker = ax.scatter(
+        [ball_x], [ball_y], marker='X', s=200,
+        c='white', edgecolors='black', zorder=20
+    )
+
+    # Prepare scatter objects (all players)
     scats = {}
     for nid in play_in['nfl_id'].unique():
-        c = player_colors.get(nid, 'white')
+        c = player_colors[nid]
         s = 120 if nid in players_to_predict else 40
         scats[nid] = ax.scatter([], [], s=s, c=c, edgecolors='white', zorder=10)
-        
-    lines_real = {nid: ax.plot([], [], c=player_colors[nid], alpha=0.4, lw=6, zorder=8)[0] for nid in players_to_predict}
-    lines_ai = {nid: ax.plot([], [], c=player_colors[nid], ls='--', lw=2, marker='.', markersize=4, zorder=9)[0] for nid in players_to_predict}
 
-    # Animation timing
-    max_in_frame = int(play_in['frame_id'].max()) if not play_in.empty else 0
-    max_out_steps = max([len(t) for t in real_trajectories.values()]) if real_trajectories else 10
-    total_frames = int(max_in_frame + max_out_steps)
+    # Lines for predicted paths
+    lines_pred = {
+        nid: ax.plot([], [], c=player_colors[nid],
+                     ls='--', lw=2, marker='.', markersize=4, zorder=9)[0]
+        for nid in players_to_predict
+    }
 
+    # Lines for real trajectories (only if provided)
+    lines_real = {}
+    if trajectories_real is not None:
+        lines_real = {
+            nid: ax.plot([], [], c=player_colors[nid],
+                         alpha=0.4, lw=6, zorder=8)[0]
+            for nid in players_to_predict
+        }
+
+    # Animation frames count
+    max_in_frame = int(play_in['frame_id'].max())
+    max_out_steps = max(len(traj[0]) for traj in trajectories_pred.values()) \
+                    if trajectories_pred else 0
+
+    total_frames = max_in_frame + max_out_steps
+
+    # ----------- UPDATE FUNCTION -----------
     def update(frame_idx):
         frame_num = frame_idx + 1
-        title_text = f"Frame {frame_num} | INPUT" if frame_num <= max_in_frame else f"Step {frame_num - max_in_frame} | PRED vs REAL"
-        ax.set_title(title_text, color='white', backgroundcolor='black')
-        
         artists = [ball_marker]
-        
+
         if frame_num <= max_in_frame:
-            # Input phase
-            current_data = play_in[play_in['frame_id'] == frame_num]
-            for _, row in current_data.iterrows():
+            # INPUT PHASE
+            ax.set_title(f"{title_prefix} | Input Frame {frame_num}",
+                         color='white', backgroundcolor='black')
+            frame_data = play_in[play_in['frame_id'] == frame_num]
+
+            for _, row in frame_data.iterrows():
                 nid = row['nfl_id']
-                if nid in scats:
-                    scats[nid].set_offsets([[row['x'], row['y']]])
-                    artists.append(scats[nid])
+                scats[nid].set_offsets([[row['x'], row['y']]])
+                artists.append(scats[nid])
+
         else:
-            # Output phase (pred vs real)
+            # OUTPUT PHASE
             step = frame_num - max_in_frame - 1
+            ax.set_title(f"{title_prefix} | Step {step}",
+                         color='white', backgroundcolor='black')
+
             for nid in players_to_predict:
-                # Ground truth path
-                if nid in real_trajectories and step < len(real_trajectories[nid]):
-                    path = real_trajectories[nid]
-                    lines_real[nid].set_data(path.iloc[:step+1]['x'], path.iloc[:step+1]['y'])
-                    artists.append(lines_real[nid])
-                    # Update point
-                    pos = path.iloc[step]
-                    scats[nid].set_offsets([[pos['x'], pos['y']]])
+
+                # REAL TRAJECTORY (training only)
+                if trajectories_real is not None:
+                    real_track = trajectories_real[nid]
+                    if step < len(real_track):
+                        lines_real[nid].set_data(
+                            real_track.iloc[:step+1]['x'],
+                            real_track.iloc[:step+1]['y']
+                        )
+                        artists.append(lines_real[nid])
+                        # Real point
+                        scats[nid].set_offsets(
+                            [[real_track.iloc[step]['x'], real_track.iloc[step]['y']]]
+                        )
+                        artists.append(scats[nid])
+
+                # PREDICTED TRAJECTORY
+                if step < len(trajectories_pred[nid][0]):
+                    xs, ys = trajectories_pred[nid]
+                    lines_pred[nid].set_data(xs[:step+1], ys[:step+1])
+                    artists.append(lines_pred[nid])
+
+                    # Predicted point
+                    scats[nid].set_offsets([[xs[step], ys[step]]])
                     artists.append(scats[nid])
-                # Model path
-                if nid in ai_trajectories and step < len(ai_trajectories[nid][0]):
-                    xs, ys = ai_trajectories[nid]
-                    lines_ai[nid].set_data(xs[:step+1], ys[:step+1])
-                    artists.append(lines_ai[nid])
-                    
+
         return artists
 
+    # ------------- WRITE OUTPUT HTML -------------
     output_folder = "../results"
-    filename = f"pred_game_existing_{game_id}_play_{play_id}.html"
-    filepath = os.path.join(output_folder, filename)
+    os.makedirs(output_folder, exist_ok=True)
 
-    ani = animation.FuncAnimation(fig, update, frames=total_frames, interval=100, blit=True)
+    filepath = os.path.join(output_folder, output_name)
+    ani = animation.FuncAnimation(fig, update,
+                                  frames=total_frames, interval=100, blit=True)
     with open(filepath, "w") as f:
         f.write(ani.to_jshtml())
 
     plt.close()
     return HTML(ani.to_jshtml())
+
+
+def animate_prediction(model, df_in, df_out, game_id, play_id):
+    """
+    Animate predicted versus ground-truth trajectories for one play.
+
+    Uses ``df_in`` (input tracking) to render the input phase, then overlays
+    the model's predicted path against the true path from ``df_out`` for
+    the players that have labeled outputs in that play.
+
+    Parameters
+    ----------
+    model : torch.nn.Module
+        Trained model that maps ``(query, keys)`` to predicted offsets.
+    df_in : pandas.DataFrame
+        Input tracking dataframe with history and context.
+    df_out : pandas.DataFrame
+        Output dataframe containing ground-truth future positions.
+    game_id : int
+        Game identifier.
+    play_id : int
+        Play identifier.
+
+    Returns
+    -------
+    IPython.display.HTML
+        HTML object embedding the interactive animation.
+    """
+
+    print(f"🔍 TRAIN V4 | Game {game_id} Play {play_id}")
+
+    play_in = df_in[(df_in['game_id']==game_id)&(df_in['play_id']==play_id)]
+    play_out = df_out[(df_out['game_id']==game_id)&(df_out['play_id']==play_id)]
+
+    if play_in.empty:
+        return print("❌ input empty")
+
+    players_to_predict = play_out['nfl_id'].unique()
+
+    # COLORS
+    player_colors = {}
+    for nid in play_in['nfl_id'].unique():
+        side = play_in.loc[play_in['nfl_id']==nid,'player_side'].iloc[0]
+        if nid in players_to_predict:
+            player_colors[nid] = '#FFD700' if side=='Offense' else '#FF00FF'
+        else:
+            player_colors[nid] = '#1f77b4' if side=='Offense' else '#d62728'
+
+    ball_x, ball_y = play_in['ball_land_x'].iloc[0], play_in['ball_land_y'].iloc[0]
+
+    # REAL trajectories
+    trajectories_real = {
+        nid: play_out[play_out['nfl_id']==nid].sort_values('frame_id')
+        for nid in players_to_predict
+    }
+
+    # PRED trajectories
+    trajectories_pred = {}
+    model.eval()
+    for nid in players_to_predict:
+        query, keys, start_pos = prepare_input(df_in, game_id, play_id, nid)
+        if query is None: continue
+
+        with torch.no_grad():
+            pred, _ = model(query, keys)
+        dx, dy = pred[0].tolist()
+
+        # Number of real steps
+        steps = len(trajectories_real[nid])
+        xs = np.linspace(start_pos[0], start_pos[0] + dx, steps)
+        ys = np.linspace(start_pos[1], start_pos[1] + dy, steps)
+        trajectories_pred[nid] = (xs, ys)
+
+    return _animate_core(
+        play_in=play_in,
+        players_to_predict=players_to_predict,
+        player_colors=player_colors,
+        ball_x=ball_x,
+        ball_y=ball_y,
+        trajectories_pred=trajectories_pred,
+        trajectories_real=trajectories_real,
+        title_prefix="TRAIN",
+        output_name=f"pred_train_{game_id}_{play_id}.html"
+    )
 
 
 # --- 2. ANIMATION TEST ---
 def animate_test_prediction(model, test_input_df, test_df, game_id, play_id):
-    """Animate predictions on test inputs where targets are unknown at runtime."""
+    """
+    Animate model-only predictions for a test play without ground truth.
 
-    print(f"🎬 Visualisation TEST | Game {game_id} Play {play_id}")
-    
-    # Filter inputs for the requested play
-    play_in = test_input_df[(test_input_df['game_id'] == game_id) & (test_input_df['play_id'] == play_id)]
+    Renders the input phase from ``test_input_df`` and then shows the
+    predicted trajectories for target players determined from ``test_df``
+    (if available) or the input flag ``player_to_predict``.
+
+    Parameters
+    ----------
+    model : torch.nn.Module
+        Trained model for generating trajectory offsets.
+    test_input_df : pandas.DataFrame
+        Test inputs with history/context for the requested play.
+    test_df : pandas.DataFrame
+        Test metadata indicating target players and requested output length.
+    game_id : int
+        Game identifier.
+    play_id : int
+        Play identifier.
+
+    Returns
+    -------
+    IPython.display.HTML
+        HTML object embedding the interactive animation.
+    """
+    print(f"🎬 TEST | Game {game_id} Play {play_id}")
+
+    # Filter play
+    play_in = test_input_df[(test_input_df['game_id']==game_id)&
+                            (test_input_df['play_id']==play_id)]
     if play_in.empty:
-        return print("❌ Empty input.")
+        return print("❌ input empty")
 
-    # Determine players to predict (prefer test.csv, fallback to player_to_predict flag)
-    # Option 1: use test.csv if available
-    targets_in_test_file = test_df[(test_df['game_id'] == game_id) & (test_df['play_id'] == play_id)]['nfl_id'].unique()
-    # Option 2: fallback to input flag
-    targets_in_input = play_in[play_in['player_to_predict'] == True]['nfl_id'].unique()
-    
-    players_to_predict = targets_in_test_file if len(targets_in_test_file) > 0 else targets_in_input
-    print(f"   -> {len(players_to_predict)} players to predict.")
+    # Determine players to predict
+    targets_test = test_df[(test_df['game_id']==game_id)&
+                           (test_df['play_id']==play_id)]['nfl_id'].unique()
 
-    # Ball location
-    ball_x, ball_y = play_in['ball_land_x'].iloc[0], play_in['ball_land_y'].iloc[0]
+    players_to_predict = targets_test
 
-    # Colors per player based on side and prediction target
+    # Colors
     player_colors = {}
     for nid in play_in['nfl_id'].unique():
-        info = play_in[play_in['nfl_id'] == nid].iloc[0]
-        side = info['player_side']
+        side = play_in.loc[play_in['nfl_id']==nid, 'player_side'].iloc[0]
         if nid in players_to_predict:
-            player_colors[nid] = '#FFD700' if side == 'Offense' else '#FF00FF'  # Gold / Magenta
+            player_colors[nid] = '#FFD700' if side=='Offense' else '#FF00FF'
         else:
-            player_colors[nid] = '#1f77b4' if side == 'Offense' else '#d62728'  # Blue / Red
+            player_colors[nid] = '#1f77b4' if side=='Offense' else '#d62728'
 
-    # --- PREDICTIONS ---
-    ai_trajectories = {}
+    # BALL
+    ball_x, ball_y = play_in['ball_land_x'].iloc[0], play_in['ball_land_y'].iloc[0]
+
+    # ------------- PREDICT -------------
+    trajectories_pred = {}
     model.eval()
-    max_steps_pred = 0
-
     for nid in players_to_predict:
-        query, keys, start_pos, n_frames = prepare_test_input(test_input_df, game_id, play_id, nid)
-        
-        if query is not None:
-            with torch.no_grad():
-                pred, _ = model(query, keys)
-            
-            # Denormalize: model predicts final relative offset; we interpolate linearly to that point
-            dx = pred[0, 0].item()
-            dy = pred[0, 1].item()
-            
-            pred_x = start_pos[0] + dx
-            pred_y = start_pos[1] + dy
-            
-            steps = n_frames  # Frames requested by the test set
-            max_steps_pred = max(max_steps_pred, steps)
-            
-            ai_xs = np.linspace(start_pos[0], pred_x, steps)
-            ai_ys = np.linspace(start_pos[1], pred_y, steps)
-            ai_trajectories[nid] = (ai_xs, ai_ys)
+        query, keys, start_pos, n_frames = prepare_test_input(
+            test_input_df, game_id, play_id, nid
+        )
+        if query is None:
+            continue
+        with torch.no_grad():
+            pred, _ = model(query, keys)
 
-    # --- FIGURE SETUP ---
-    fig, ax = plt.subplots(figsize=(12, 6))
-    ax.set_facecolor('#004d00')
-    ax.set_xlim(0, 120)
-    ax.set_ylim(0, 53.3)
-    for x in range(10, 111, 10): ax.axvline(x, color='white', alpha=0.15)
-    
-    # Ballon
-    ball_marker = ax.scatter([ball_x], [ball_y], marker='X', s=200, c='white', edgecolors='black', zorder=20)
-    
-    # Legend
-    legend_elements = [
-        Line2D([0], [0], marker='X', color='w', markeredgecolor='k', label='Ballon (Cible)'),
-        Line2D([0], [0], color='#FFD700', lw=2, linestyle='--', marker='.', label='IA (Attaque)'),
-        Line2D([0], [0], color='#FF00FF', lw=2, linestyle='--', marker='.', label='IA (Défense)'),
-    ]
-    ax.legend(handles=legend_elements, loc='upper right', facecolor='black', labelcolor='white')
+        dx, dy = pred[0].tolist()
+        end_x = start_pos[0] + dx
+        end_y = start_pos[1] + dy
 
-    # Objets
-    scats = {}
-    for nid in play_in['nfl_id'].unique():
-        c = player_colors.get(nid, 'white')
-        s = 120 if nid in players_to_predict else 40
-        scats[nid] = ax.scatter([], [], s=s, c=c, edgecolors='white', zorder=10)
-        
-    lines_ai = {nid: ax.plot([], [], c=player_colors[nid], ls='--', lw=2, marker='.', markersize=4, zorder=9)[0] for nid in players_to_predict}
+        xs = np.linspace(start_pos[0], end_x, n_frames)
+        ys = np.linspace(start_pos[1], end_y, n_frames)
+        trajectories_pred[nid] = (xs, ys)
 
-    # Animation timing
-    max_in_frame = int(play_in['frame_id'].max())
-    total_frames = int(max_in_frame + max_steps_pred)
-
-    def update(frame_idx):
-        frame_num = frame_idx + 1
-        title_text = f"TEST SET | Frame {frame_num}"
-        ax.set_title(title_text, color='white', backgroundcolor='black')
-        artists = [ball_marker]
-        
-        if frame_num <= max_in_frame:
-            # Input phase
-            current_data = play_in[play_in['frame_id'] == frame_num]
-            for _, row in current_data.iterrows():
-                nid = row['nfl_id']
-                if nid in scats:
-                    scats[nid].set_offsets([[row['x'], row['y']]])
-                    artists.append(scats[nid])
-        else:
-            # Prediction phase
-            step = frame_num - max_in_frame - 1
-            for nid in players_to_predict:
-                if nid in ai_trajectories:
-                    xs, ys = ai_trajectories[nid]
-                    if step < len(xs):
-                        # Draw progressive predicted path
-                        lines_ai[nid].set_data(xs[:step+1], ys[:step+1])
-                        artists.append(lines_ai[nid])
-                        # Move marker to path tip
-                        scats[nid].set_offsets([[xs[step], ys[step]]])
-                        artists.append(scats[nid])
-                    
-        return artists
-
-    output_folder = "../results"
-    filename = f"pred_game_{game_id}_play_{play_id}.html"
-    filepath = os.path.join(output_folder, filename)
-
-    ani = animation.FuncAnimation(fig, update, frames=total_frames, interval=100, blit=True)
-    with open(filepath, "w") as f:
-        f.write(ani.to_jshtml())
-
-    plt.close()
-    return HTML(ani.to_jshtml())
+    return _animate_core(
+        play_in=play_in,
+        players_to_predict=players_to_predict,
+        player_colors=player_colors,
+        ball_x=ball_x,
+        ball_y=ball_y,
+        trajectories_pred=trajectories_pred,
+        trajectories_real=None,
+        title_prefix="TEST",
+        output_name=f"pred_test_{game_id}_{play_id}.html"
+    )
