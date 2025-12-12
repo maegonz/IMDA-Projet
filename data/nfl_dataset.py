@@ -125,6 +125,7 @@ class NFLDataset(Dataset):
 
             common_plays = set(df_in["play_id"]).intersection(df_out["play_id"])
             for play_id in tqdm(common_plays, leave=False, desc=input_path.name):
+                # Each play yields multiple target-player samples
                 samples.extend(self._process_play(df_in, df_out, play_id))
 
         if not samples:
@@ -191,6 +192,7 @@ class NFLDataset(Dataset):
 
             samples.append((query, keys, label))
             if self.augment:
+                # Mirror the play across the horizontal axis to double data
                 samples.append(self._flip_vertical(query, keys, label))
 
         return samples
