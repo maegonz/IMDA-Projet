@@ -8,20 +8,8 @@ import matplotlib.patches as patches
 import numpy as np
 import torch
 from matplotlib.lines import Line2D
+from data.processing import get_angle_features, HISTORY_SIZE, MAX_SPEED, MAX_ACCEL, MAX_DIST
 
-# Mettez le chemin vers votre dossier contenant les CSV
-# Exemple : ""
-path_to_train = "../nfl-big-data-bowl-2026-prediction/train/" 
-
-# --- CONSTANTES (Doivent être identiques à l'entraînement) ---
-HISTORY_SIZE = 10
-MAX_SPEED = 13.0
-MAX_ACCEL = 10.0
-MAX_DIST = 50.0
-
-def get_angle_features(degree_val):
-    rad = np.radians(degree_val)
-    return np.sin(rad), np.cos(rad)
 
 # --- 1. FONCTION DE PRÉPARATION V4 (Cruciale) ---
 def prepare_input_v4(df, game_id, play_id, target_nfl_id):
@@ -247,10 +235,6 @@ MAX_SPEED = 13.0
 MAX_ACCEL = 10.0
 MAX_DIST = 50.0
 
-def get_angle_features(degree_val):
-    rad = np.radians(degree_val)
-    return np.sin(rad), np.cos(rad)
-
 # --- 1. PRÉPARATION INPUT TEST (Sans Output) ---
 def prepare_test_input(df, game_id, play_id, target_nfl_id):
     play_data = df[(df['game_id'] == game_id) & (df['play_id'] == play_id)].sort_values('frame_id')
@@ -434,4 +418,3 @@ def animate_test_prediction(model, test_input_df, test_df, game_id, play_id):
 
     plt.close()
     return HTML(ani.to_jshtml())
-
