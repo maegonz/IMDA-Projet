@@ -331,7 +331,7 @@ class NFLDataset(Dataset):
 
         return query_flip, keys_flip, label_flip
     
-    def _split(self, ratio: float=0.8):
+    def split(self, ratio: float=0.8):
         """Split the dataset into training and testing subsets.
 
         Parameters
