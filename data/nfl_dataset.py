@@ -1,162 +1,230 @@
-import numpy as np
+"""NFL Dataset for player trajectory prediction using attention mechanism."""
+
 import pandas as pd
 import torch
-import glob
-import os
+from pathlib import Path
 from tqdm import tqdm
-from torch.utils.data import Dataset, DataLoader
+from typing import List, Sequence, Tuple
+from torch.utils.data import Dataset
+from processing import HISTORY_SIZE, MAX_ACCEL, MAX_DIST, MAX_SPEED, get_angle_features
 
-INPUT_FILES = sorted(glob.glob("./train/input_*.csv"))
-FUTURE_WINDOW = 10  # Position prediction in 10 frames (1 second)
-columns_dropped = [
-    'player_height', 'player_weight', 'player_birth_date', 'player_name'
-]
-columns_groupedby = [
-    'game_id', 'play_id', 'frame_id'
-]
+# File used to cache the fully built dataset
+DEFAULT_DATASET_FILE = Path("./data/nfl_dataset.pt")
+# Maximum number of context players kept (padding applied when fewer are present)
+MAX_CONTEXT_PLAYERS = 22
+# Number of features per context player
+KEY_DIM = 9
 
-data_list = []
-limit_x, limit_y = 120, 53.3  # Field dimensions in yards
-    
+
 class NFLDataset(Dataset):
-    def __init__(self,
-                 input_dir: str = './data/train/'):
-        
-        # list of input files paths
-        self.list_inputs = sorted(glob.glob(os.path.join(input_dir, "input_*.csv")))
+    """
+    Dataset for NFL player trajectory prediction.
+    
+    This dataset processes input/output CSV files to create query-key-value pairs
+    for an attention-based model predicting receiver positions.
+    """
+    def __init__(
+        self,
+        input_dir: str = "./data/train/",
+        cache_file: Path | str = DEFAULT_DATASET_FILE,
+        use_cache: bool = True,
+        augment: bool = True,
+    ):
+        """Load or build the dataset.
 
-        # data = torch.load(pt_file)
-        # self.queries = data['queries']
-        # self.keys = data['keys']
-        # self.labels = data['labels']
+        Args:
+            input_dir: Directory containing input_*.csv and output_*.csv files.
+            cache_file: Path used to store the preprocessed dataset for faster reloads.
+            use_cache: If True, load from cache when available and save after preprocessing.
+            augment: If True, apply vertical flip augmentation on each sample.
+        """
 
+        self.input_dir = Path(input_dir)
+        self.cache_file = Path(cache_file)
+        self.use_cache = use_cache
+        self.augment = augment
+
+        self.list_inputs = sorted(self.input_dir.glob("input_*.csv"))
+        if not self.list_inputs:
+            raise ValueError(f"No input files found in {self.input_dir}")
+
+        if use_cache and self.cache_file.exists():
+            self._load_cache()
+        else:
+            self.queries, self.keys, self.labels = self._build_dataset()
+            if use_cache:
+                self._save_cache()
 
     def __len__(self):
         return len(self.labels)
 
-    def __getitem__(self, idx):
-        input_file = self.list_inputs[idx]
-        output_file = input_file.replace("input_", "output_")
+    def __getitem__(self, idx: int):
+        return (
+            self.queries[idx].clone(),
+            self.keys[idx].clone(),
+            self.labels[idx].clone(),
+        )
 
-        assert os.path.exists(output_file), f"Output file not found for {input_file}"
+    def _load_cache(self):
+        payload = torch.load(self.cache_file)
+        self.queries = payload["queries"]
+        self.keys = payload["keys"]
+        self.labels = payload["labels"]
 
-        print(f"🔄 Processing {input_file}...")
-        df_in, df_out = pd.read_csv(input_file), pd.read_csv(output_file)
-        print(f" - Input shape : {df_in.shape}, Output shape : {df_out.shape}")
+    def _save_cache(self):
+        self.cache_file.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(
+            {"queries": self.queries, "keys": self.keys, "labels": self.labels},
+            self.cache_file,
+        )
 
-        grouped = df_in.groupby(columns_groupedby)
+    def _build_dataset(self):
+        samples: List[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = []
 
-        for (game_id, play_id, frame_id), group in tqdm(grouped):
+        for input_path in self.list_inputs:
+            output_path = input_path.with_name(input_path.name.replace("input_", "output_"))
+            if not output_path.exists():
+                continue
 
-            # A. Receiver (Query)
-            rec_row = group[group['player_role'] == 'Targeted Receiver']
-            if len(rec_row) != 1: continue
+            df_in = pd.read_csv(input_path)
+            df_out = pd.read_csv(output_path)
+            if df_in.empty or df_out.empty:
+                continue
 
-            # receiver position
-            rx, ry = rec_row['x'].values[0], rec_row['y'].values[0]
-            # receiver id
-            rec_id = rec_row['nfl_id'].values[0]
-            # player's direction LEFT or RIGHT
-            play_dir = rec_row['play_direction'].values[0]
-            # receiver's speed and direction
-            rec_s = rec_row['s'].values[0]  # speed in yards/sec
-            rec_dir = rec_row['dir'].values[0]  # direction in degrees
+            common_plays = set(df_in["play_id"]).intersection(df_out["play_id"])
+            for play_id in tqdm(common_plays, leave=False, desc=input_path.name):
+                samples.extend(self._process_play(df_in, df_out, play_id))
 
-            # B. Label (Output)
-            future_frame = frame_id + FUTURE_WINDOW
-            future_pos = df_out[
-                (df_out['game_id'] == game_id) &
-                (df_out['play_id'] == play_id) &
-                (df_out['nfl_id'] == rec_id) &
-                (df_out['frame_id'] == future_frame)
-            ]
+        if not samples:
+            raise ValueError("No samples were generated from the provided data.")
 
-            if len(future_pos) == 0: continue
+        queries = torch.stack([s[0] for s in samples])
+        keys = torch.stack([s[1] for s in samples])
+        labels = torch.stack([s[2] for s in samples])
+        return queries, keys, labels
 
-            # Movement brut
-            raw_dx = future_pos['x'].values[0] - rx
-            raw_dy = future_pos['y'].values[0] - ry
+    def _process_play(
+        self, df_in: pd.DataFrame, df_out: pd.DataFrame, play_id: int
+    ):
+        play_in = (
+            df_in[(df_in["game_id"] == df_in["game_id"].iloc[0]) & (df_in["play_id"] == play_id)]
+            .sort_values("frame_id")
+        )
+        play_out = (
+            df_out[(df_out["game_id"] == df_out["game_id"].iloc[0]) & (df_out["play_id"] == play_id)]
+            .sort_values("frame_id")
+        )
 
-            # CRUCIAL CORRECTION: If the play is going left, invert the movement
-            # So that "Moving forward" is always positive in the model's reference frame
-            if play_dir == 'left':
-                label_dx = -raw_dx
-                label_dy = -raw_dy
-            else:
-                label_dx = raw_dx
-                label_dy = raw_dy
+        candidates = play_in.loc[play_in["player_to_predict"].astype(bool), "nfl_id"].unique()
+        samples = []  # List[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]
 
-            label_tensor = torch.tensor([label_dx, label_dy], dtype=torch.float32)
+        for target_id in candidates:
+            player_track = play_in[play_in["nfl_id"] == target_id]
+            if len(player_track) < HISTORY_SIZE:
+                continue
 
-            # C. Query Tensor (Standardisé)
-            # ball landing position
-            ball_x, ball_y = rec_row['ball_land_x'].values[0], rec_row['ball_land_y'].values[0]
+            history_seq = player_track.iloc[-HISTORY_SIZE:]
+            current_pos = history_seq.iloc[-1]
 
-            if play_dir == 'left':
-                ball_x = limit_x - ball_x
-                ball_y = limit_y - ball_y
-                rx_std = limit_x - rx
-                ry_std = limit_y - ry
-                rec_dir = (rec_dir + 180) % 360
-            else:
-                rx_std = rx
-                ry_std = ry
-                # rec_dir reste tel quel
+            future_track = play_out[play_out["nfl_id"] == target_id]
+            if future_track.empty:
+                continue
 
-            q_feats = [rec_s, rec_dir, ball_x - rx_std, ball_y - ry_std]
-            query_tensor = torch.tensor(q_feats, dtype=torch.float32)
+            future_pos = future_track.iloc[-1]
+            label = torch.tensor(
+                [future_pos["x"] - current_pos["x"], future_pos["y"] - current_pos["y"]],
+                dtype=torch.float32,
+            )
 
-            # D. Keys (Défenseurs Standardisés)
-            defenders = group[group['player_side'] == 'Defense']
-            if len(defenders) == 0: continue
+            target_side = player_track["player_side"].iloc[0]
+            ball_x, ball_y = current_pos["ball_land_x"], current_pos["ball_land_y"]
+            query = self._build_query(history_seq, ball_x, ball_y, target_side == "Offense")
+            keys = self._build_keys(play_in, current_pos, target_id, target_side)
 
-            def_list = []
-            for _, d in defenders.iterrows():
-                dx, dy = d['x'], d['y']
-                ds, ddir = d['s'], d['dir']
+            samples.append((query, keys, label))
+            if self.augment:
+                samples.append(self._flip_vertical(query, keys, label))
 
-                if play_dir == 'left':
-                    dx = limit_x - dx
-                    dy = limit_y - dy
-                    ddir = (ddir + 180) % 360
+        return samples
 
-                d_feats = [dx - rx_std, dy - ry_std, ds, ddir]
-                def_list.append(d_feats)
+    def _build_query(
+        self,
+        history_seq: pd.DataFrame,
+        ball_x: float,
+        ball_y: float,
+        is_offense: bool,
+    ):
+        rec_features = []  # List[float]
+        for _, row in history_seq.iterrows():
+            sin_d, cos_d = get_angle_features(row["dir"])
+            sin_o, cos_o = get_angle_features(row["o"])
 
-            keys_tensor = torch.tensor(def_list, dtype=torch.float32)
+            rec_features.extend(
+                [
+                    row["s"] / MAX_SPEED,
+                    row["a"] / MAX_ACCEL,
+                    sin_d,
+                    cos_d,
+                    sin_o,
+                    cos_o,
+                    (ball_x - row["x"]) / MAX_DIST,
+                    (ball_y - row["y"]) / MAX_DIST,
+                    1.0 if is_offense else 0.0,
+                ]
+            )
 
-            # Padding
-            if keys_tensor.shape[0] < 11:
-                padding = torch.zeros((11 - keys_tensor.shape[0], 4))
-                keys_tensor = torch.cat([keys_tensor, padding], dim=0)
-            else:
-                keys_tensor = keys_tensor[:11]
+        return torch.tensor(rec_features, dtype=torch.float32)
 
-            data_list.append((query_tensor, keys_tensor, label_tensor))
+    def _build_keys(
+        self,
+        play_in: pd.DataFrame,
+        current_pos: pd.Series,
+        target_id: int,
+        target_side: str,
+    ):
+        current_frame = current_pos["frame_id"]
+        others = play_in[(play_in["frame_id"] == current_frame) & (play_in["nfl_id"] != target_id)]
 
-        q = self.queries[idx].clone()
-        k = self.keys[idx].clone()
-        y = self.labels[idx].clone()
+        keys_list = []  # List[Sequence[float]]
+        for _, other_row in others.iterrows():
+            sin_d, cos_d = get_angle_features(other_row["dir"])
+            sin_o, cos_o = get_angle_features(other_row["o"])
 
-        # --- NORMALISATION ---
-        # Query: [Speed, Dir, DistX, DistY]
-        q[0] /= 10.0   # Speed (max ~10)
-        q[1] /= 360.0  # Dir
-        q[2] /= 50.0   # DistX (max ~50)
-        q[3] /= 50.0   # DistY
+            keys_list.append(
+                [
+                    (other_row["x"] - current_pos["x"]) / MAX_DIST,
+                    (other_row["y"] - current_pos["y"]) / MAX_DIST,
+                    other_row["s"] / MAX_SPEED,
+                    other_row["a"] / MAX_ACCEL,
+                    sin_d,
+                    cos_d,
+                    sin_o,
+                    cos_o,
+                    1.0 if target_side == other_row["player_side"] else 0.0,
+                ]
+            )
 
-        # Keys: [RelX, RelY, Speed, Dir]
-        k[:, 0] /= 50.0
-        k[:, 1] /= 50.0
-        k[:, 2] /= 10.0
-        k[:, 3] /= 360.0
+        while len(keys_list) < MAX_CONTEXT_PLAYERS:
+            keys_list.append([0.0] * KEY_DIM)
 
-        # Label: [dX, dY] (Déplacement sur 10 frames, env 10 yards max)
-        y /= 10.0
+        return torch.tensor(keys_list[:MAX_CONTEXT_PLAYERS], dtype=torch.float32)
 
-        return q, k, y
-    
-    def _movement_correction(self, dx, dy, play_dir):
-        if play_dir == 'left':
-            return limit_x - dx, limit_y - dy
-        return dx, dy
+    def _flip_vertical(
+        self, query: torch.Tensor, keys: torch.Tensor, label: torch.Tensor
+    ):
+        query_flip = query.clone()
+        keys_flip = keys.clone()
+        label_flip = label.clone()
+
+        for i in range(HISTORY_SIZE):
+            base = i * KEY_DIM
+            query_flip[base + 3] *= -1  # cos_d
+            query_flip[base + 5] *= -1  # cos_o
+            query_flip[base + 7] *= -1  # dist_y
+
+        keys_flip[:, 1] *= -1  # rel_y
+        keys_flip[:, 5] *= -1  # cos_d
+        keys_flip[:, 7] *= -1  # cos_o
+        label_flip[1] *= -1
+
+        return query_flip, keys_flip, label_flip
