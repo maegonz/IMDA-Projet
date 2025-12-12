@@ -38,7 +38,8 @@ def load_all_data(folder_path):
 
 def get_angle_features(degree_val):
     rad = np.radians(degree_val)
-    return np.sin(rad), np.cos(rad)
+    sin, cos = np.sin(rad), np.cos(rad)
+    return sin, cos
 
 def normalisation(queries, keys, labels=None):
         # --- NORMALISATION ---
