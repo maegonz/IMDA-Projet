@@ -6,7 +6,7 @@ from pathlib import Path
 from tqdm import tqdm
 from typing import List, Sequence, Tuple
 from torch.utils.data import Dataset
-from processing import HISTORY_SIZE, MAX_ACCEL, MAX_DIST, MAX_SPEED, get_angle_features
+from .processing import HISTORY_SIZE, MAX_ACCEL, MAX_DIST, MAX_SPEED, get_angle_features
 
 # File used to cache the fully built dataset
 DEFAULT_DATASET_FILE = Path("./data/nfl_dataset.pt")
