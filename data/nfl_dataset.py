@@ -17,11 +17,11 @@ KEY_DIM = 9
 
 
 class NFLDataset(Dataset):
-    """
-    Dataset for NFL player trajectory prediction.
-    
-    This dataset processes input/output CSV files to create query-key-value pairs
-    for an attention-based model predicting receiver positions.
+    """Process play tracking CSVs into tensors for attention models.
+
+    The dataset pairs historical player states (queries), surrounding context
+    players (keys), and future displacements (labels) to train receiver position
+    predictors.
     """
     def __init__(
         self,
@@ -32,11 +32,22 @@ class NFLDataset(Dataset):
     ):
         """Load or build the dataset.
 
-        Args:
-            input_dir: Directory containing input_*.csv and output_*.csv files.
-            cache_file: Path used to store the preprocessed dataset for faster reloads.
-            use_cache: If True, load from cache when available and save after preprocessing.
-            augment: If True, apply vertical flip augmentation on each sample.
+        Parameters
+        ----------
+        input_dir : str, default "./data/train/"
+            Directory containing matching `input_*.csv` and `output_*.csv` files.
+        cache_file : Path or str, default DEFAULT_DATASET_FILE
+            Location to cache preprocessed tensors for quicker reloads.
+        use_cache : bool, default True
+            Whether to read/write the cache instead of rebuilding every time.
+        augment : bool, default True
+            Apply vertical flip augmentation to each sample to double the dataset size.
+
+        Raises
+        ------
+        ValueError
+            If no input CSV files are found in ``input_dir`` or if preprocessing
+            yields zero samples.
         """
 
         self.input_dir = Path(input_dir)
@@ -59,6 +70,18 @@ class NFLDataset(Dataset):
         return len(self.labels)
 
     def __getitem__(self, idx: int):
+        """Return one sample of query, keys, and label tensors.
+
+        Parameters
+        ----------
+        idx : int
+            Index of the sample to retrieve.
+
+        Returns
+        -------
+        Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+            Cloned tensors for the query sequence, context keys, and displacement label.
+        """
         return (
             self.queries[idx].clone(),
             self.keys[idx].clone(),
@@ -66,12 +89,14 @@ class NFLDataset(Dataset):
         )
 
     def _load_cache(self):
+        """Populate tensors from an existing cache file."""
         payload = torch.load(self.cache_file)
         self.queries = payload["queries"]
         self.keys = payload["keys"]
         self.labels = payload["labels"]
 
     def _save_cache(self):
+        """Persist preprocessed tensors to the cache path."""
         self.cache_file.parent.mkdir(parents=True, exist_ok=True)
         torch.save(
             {"queries": self.queries, "keys": self.keys, "labels": self.labels},
@@ -79,7 +104,14 @@ class NFLDataset(Dataset):
         )
 
     def _build_dataset(self):
-        samples: List[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = []
+        """Parse all input/output CSV pairs into tensors.
+
+        Returns
+        -------
+        tuple of torch.Tensor
+            Stacked tensors for queries, keys, and labels respectively.
+        """
+        samples = []  # List[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]
 
         for input_path in self.list_inputs:
             output_path = input_path.with_name(input_path.name.replace("input_", "output_"))
@@ -106,6 +138,22 @@ class NFLDataset(Dataset):
     def _process_play(
         self, df_in: pd.DataFrame, df_out: pd.DataFrame, play_id: int
     ):
+        """Convert one play into multiple samples for each target player.
+
+        Parameters
+        ----------
+        df_in : pandas.DataFrame
+            Input tracking data containing historical frames.
+        df_out : pandas.DataFrame
+            Output tracking data containing future frames for labels.
+        play_id : int
+            Identifier of the play to process.
+
+        Returns
+        -------
+        list of tuple
+            Each tuple holds (query, keys, label) tensors for a target player instance.
+        """
         play_in = (
             df_in[(df_in["game_id"] == df_in["game_id"].iloc[0]) & (df_in["play_id"] == play_id)]
             .sort_values("frame_id")
@@ -154,7 +202,25 @@ class NFLDataset(Dataset):
         ball_y: float,
         is_offense: bool,
     ):
-        rec_features = []  # List[float]
+        """Flatten receiver history into a single query vector.
+
+        Parameters
+        ----------
+        history_seq : pandas.DataFrame
+            Last ``HISTORY_SIZE`` frames for the target player.
+        ball_x : float
+            Ball landing x-coordinate for relative distance features.
+        ball_y : float
+            Ball landing y-coordinate for relative distance features.
+        is_offense : bool
+            Whether the target player is on offense (one-hot encoded in features).
+
+        Returns
+        -------
+        torch.Tensor
+            Query tensor of shape (HISTORY_SIZE * 9,).
+        """
+        rec_features: List[float] = []
         for _, row in history_seq.iterrows():
             sin_d, cos_d = get_angle_features(row["dir"])
             sin_o, cos_o = get_angle_features(row["o"])
@@ -182,6 +248,24 @@ class NFLDataset(Dataset):
         target_id: int,
         target_side: str,
     ):
+        """Build context keys for players on the same frame as the target.
+
+        Parameters
+        ----------
+        play_in : pandas.DataFrame
+            Full play input data.
+        current_pos : pandas.Series
+            Current frame row for the target player.
+        target_id : int
+            Target player's NFL identifier.
+        target_side : str
+            Offense/Defense side of the target player.
+
+        Returns
+        -------
+        torch.Tensor
+            Keys tensor of shape (MAX_CONTEXT_PLAYERS, KEY_DIM) with padding.
+        """
         current_frame = current_pos["frame_id"]
         others = play_in[(play_in["frame_id"] == current_frame) & (play_in["nfl_id"] != target_id)]
 
@@ -212,6 +296,22 @@ class NFLDataset(Dataset):
     def _flip_vertical(
         self, query: torch.Tensor, keys: torch.Tensor, label: torch.Tensor
     ):
+        """Apply vertical flip augmentation to query, keys, and label.
+
+        Parameters
+        ----------
+        query : torch.Tensor
+            Original query tensor.
+        keys : torch.Tensor
+            Original keys tensor.
+        label : torch.Tensor
+            Original displacement label.
+
+        Returns
+        -------
+        tuple of torch.Tensor
+            Vertically flipped versions of (query, keys, label).
+        """
         query_flip = query.clone()
         keys_flip = keys.clone()
         label_flip = label.clone()

@@ -4,12 +4,14 @@ import matplotlib.patches as patches
 
 from torch import nn, optim
 from torch.utils.data import DataLoader
+from data.processing import normalisation
 
 def train_model(model: nn.Module,
-          train_loader: DataLoader,
-          criterion,
-          optimizer: optim.Optimizer,
-          num_epochs: int=20):
+                train_loader: DataLoader,
+                criterion,
+                optimizer: optim.Optimizer,
+                num_epochs: int=20):
+    
     # 4. Entraînement
     print("🚀 Entraînement avec Normalisation...")
     losses = []
@@ -43,8 +45,9 @@ def train_model(model: nn.Module,
 
 
 def evaluate_model(model: nn.Module,
-             test_loader: DataLoader,
-             criterion):
+                   test_loader: DataLoader,
+                   criterion):
+    
     model.eval()
     total_loss = 0
     with torch.no_grad():
@@ -68,15 +71,7 @@ def analyze_play(model: nn.Module, idx: int):
     q_norm = q_raw.clone()
     k_norm = k_raw.clone()
 
-    q_norm[0] /= 13.0
-    q_norm[1] /= 360.0
-    q_norm[2] /= 50.0
-    q_norm[3] /= 50.0
-
-    k_norm[:, 0] /= 50.0
-    k_norm[:, 1] /= 50.0
-    k_norm[:, 2] /= 13.0
-    k_norm[:, 3] /= 360.0
+    q_norm, k_norm = normalisation(q_norm, k_norm)
 
     # Ajouter la dimension Batch (1, ...)
     q_input = q_norm.unsqueeze(0)
