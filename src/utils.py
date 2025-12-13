@@ -59,3 +59,28 @@ def get_game_play_ids(folder_path: str='./data/train'):
     output_ids = sorted(output_ids)
 
     return input_ids, output_ids
+
+
+def game_choice(input_ids: List[Tuple[int, int]], output_ids: List[Tuple[int, int]], random_state: int=None):
+    """
+    Randomly select a (game_id, play_id) pair present in both input and output IDs.
+
+    Parameters
+    ----------
+    input_ids : list[tuple[int, int]]
+        List of (game_id, play_id) tuples from input files.
+    output_ids : list[tuple[int, int]]
+        List of (game_id, play_id) tuples from output files.
+
+    Returns
+    -------
+    tuple[int, int]
+        A randomly selected (game_id, play_id) pair present in both lists.
+    """
+    if random_state is not None:
+        rd.seed(random_state)  # for reproducibility
+
+    assert set(input_ids) & set(output_ids), "No common (game_id, play_id) pairs found."
+    common_ids = list(set(input_ids) & set(output_ids))
+    game, play = rd.choice(common_ids)
+    return game, play
