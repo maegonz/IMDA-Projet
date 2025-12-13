@@ -8,7 +8,7 @@ def _extract_ids(file_pattern: str):
     """
     Extract unique (game_id, play_id) pairs from files matching pattern.
     
-    Returns set of IDs and count of files processed.
+    Returns set of IDs of files processed.
     """
     ids = set()  # avoid recurring IDs
     for f in glob.glob(file_pattern):
