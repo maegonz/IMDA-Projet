@@ -1,15 +1,9 @@
 import numpy as np
-import pandas as pd
 import torch
-import glob
 import os
 import matplotlib.animation as animation
 import matplotlib.pyplot as plt
-import matplotlib.patches as patches
 from IPython.display import HTML
-from typing import List
-from matplotlib.lines import Line2D
-from data.processing import get_angle_features, HISTORY_SIZE, MAX_SPEED, MAX_ACCEL, MAX_DIST
 from .utils import prepare_input, prepare_test_input
 
 
