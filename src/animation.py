@@ -4,7 +4,7 @@ import os
 import matplotlib.animation as animation
 import matplotlib.pyplot as plt
 from IPython.display import HTML
-from .utils import prepare_input, prepare_test_input
+from .processing import prepare_input, prepare_test_input
 
 
 def _animate_core(
