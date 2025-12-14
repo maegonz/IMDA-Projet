@@ -85,6 +85,8 @@ nfl-project/
 ├── requirements.txt        # Python dependencies
 └── README.md               # Project documentation
 
+```
+
 
 ## Results
 
