@@ -157,30 +157,27 @@ def animate_prediction(model, df_in, df_out, game_id, play_id):
         HTML object embedding the interactive animation.
     """
 
-    print(f"🔍 TRAIN V4 | Game {game_id} Play {play_id}")
+    print(f"🔍 Game {game_id} Play {play_id}")
 
-    play_in = df_in[(df_in['game_id']==game_id)&(df_in['play_id']==play_id)]
-    play_out = df_out[(df_out['game_id']==game_id)&(df_out['play_id']==play_id)]
-
-    if play_in.empty:
+    if df_in.empty:
         return print("❌ input empty")
 
-    players_to_predict = play_out['nfl_id'].unique()
+    players_to_predict = df_out['nfl_id'].unique()
 
     # COLORS
     player_colors = {}
-    for nid in play_in['nfl_id'].unique():
-        side = play_in.loc[play_in['nfl_id']==nid,'player_side'].iloc[0]
+    for nid in df_in['nfl_id'].unique():
+        side = df_in.loc[df_in['nfl_id']==nid,'player_side'].iloc[0]
         if nid in players_to_predict:
             player_colors[nid] = '#FFD700' if side=='Offense' else '#FF00FF'
         else:
             player_colors[nid] = '#1f77b4' if side=='Offense' else '#d62728'
 
-    ball_x, ball_y = play_in['ball_land_x'].iloc[0], play_in['ball_land_y'].iloc[0]
+    ball_x, ball_y = df_in['ball_land_x'].iloc[0], df_in['ball_land_y'].iloc[0]
 
     # REAL trajectories
     trajectories_real = {
-        nid: play_out[play_out['nfl_id']==nid].sort_values('frame_id')
+        nid: df_out[df_out['nfl_id']==nid].sort_values('frame_id')
         for nid in players_to_predict
     }
 
@@ -202,7 +199,7 @@ def animate_prediction(model, df_in, df_out, game_id, play_id):
         trajectories_pred[nid] = (xs, ys)
 
     return _animate_core(
-        play_in=play_in,
+        play_in=df_in,
         players_to_predict=players_to_predict,
         player_colors=player_colors,
         ball_x=ball_x,
