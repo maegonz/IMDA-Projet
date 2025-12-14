@@ -73,6 +73,11 @@ nfl-project/
 │   ├── notebook.ipynb   # Initial data analysis
 │   └── notebookseq2seq.ipynb # Main training script
 │
+│
+├── models/              # models with trained weights
+│   ├── nfl_attention_model_multi_agent.pth   # regressor model with trained weights
+│   └── nfl_attention_model_seq2seq.pth # seq2seq model with trained weights
+│
 ├── src/                    # Source code modules
 │   ├── dataset.py          # Custom PyTorch Dataset class
 │   ├── modelseq2seq.py            # Transformer Seq2Seq Architecture
