@@ -37,8 +37,7 @@ def get_game_play_ids(folder_path: str='./data/train'):
     Returns
     -------
     tuple[list, list]
-        (input_ids, output_ids) where each is a sorted list of
-        (game_id, play_id) tuples.
+        (input_ids, output_ids) where each is a sorted list of (game_id, play_id) tuples.
         Returns ([], []) if no files are found.
 
     Examples
