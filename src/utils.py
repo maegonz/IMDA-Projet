@@ -1,5 +1,6 @@
 import os
 import glob
+import torch
 import pandas as pd
 import random as rd
 from typing import Tuple, List
@@ -83,3 +84,20 @@ def game_choice(input_ids: List[Tuple[int, int]], output_ids: List[Tuple[int, in
     common_ids = list(set(input_ids) & set(output_ids))
     game, play = rd.choice(common_ids)
     return game, play
+
+
+def seed_everything(seed: int):
+    """
+    Set random seed for reproducibility across various libraries.
+
+    Parameters
+    ----------
+    seed : int
+        The seed value to set.
+    """
+    rd.seed(seed)
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
