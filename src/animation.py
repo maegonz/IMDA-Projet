@@ -250,8 +250,8 @@ def animate_test_prediction(model, test_input_df, test_df, game_id, play_id):
     # Determine players to predict
     targets_test = test_df[(test_df['game_id']==game_id)&
                            (test_df['play_id']==play_id)]['nfl_id'].unique()
-
     players_to_predict = targets_test
+    print(f"Players to predict: {players_to_predict}")
 
     # Colors
     player_colors = {}
