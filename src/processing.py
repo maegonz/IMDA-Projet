@@ -64,10 +64,11 @@ def _player_historic(
     play_data = df[(df['game_id'] == game_id) & (df['play_id'] == play_id)].sort_values('frame_id')
     # Player track
     player_track = play_data[play_data['nfl_id'] == nfl_id]
+    assert not player_track.empty, f"============ ERROR ============ \n No data for player {nfl_id} in game {game_id}, play {play_id}."
 
     if len(player_track) < HISTORY_SIZE:
         print(f"Less thant {HISTORY_SIZE} history for player {nfl_id} in game {game_id}, play {play_id}.")
-        # return play_data, player_track.iloc[-len(player_track):]
+        print(f"Available frames: {len(player_track)}")
         return None, None
 
     return play_data, player_track.iloc[-HISTORY_SIZE:]
@@ -106,10 +107,9 @@ def _prepare_core_input(df, game_id, play_id, target_id, num_frames_out=False):
     # Filter play data
     play_data, history_seq = _player_historic(df, game_id, play_id, target_id)
     if history_seq is None:
-        return None, None, None, None if num_frames_out else (None, None, None)
+        return (None, None, None, None) if num_frames_out else (None, None, None)
     
     # Full play data for context lookups
-    print(play_data, history_seq)
     current_pos = history_seq.iloc[-1]  # Last frame (T)
 
     # --- A. Build receiver query (flattened history) ---
