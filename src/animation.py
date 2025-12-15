@@ -130,7 +130,7 @@ def _animate_core(
     return HTML(ani.to_jshtml())
 
 
-def animate_prediction(model, df_in, df_out, game_id, play_id):
+def animate_prediction(model, df_in, df_out, game_id, play_id, device):
     """
     Animate predicted versus ground-truth trajectories for one play.
 
@@ -190,6 +190,9 @@ def animate_prediction(model, df_in, df_out, game_id, play_id):
         if query is None: continue
 
         with torch.no_grad():
+            # Move to device
+            query = query.to(device)
+            keys = keys.to(device)
             pred, _ = model(query, keys)
         dx, dy = pred[0].tolist()
 
@@ -213,7 +216,7 @@ def animate_prediction(model, df_in, df_out, game_id, play_id):
 
 
 # --- 2. ANIMATION TEST ---
-def animate_test_prediction(model, test_input_df, test_df, game_id, play_id):
+def animate_test_prediction(model, test_input_df, test_df, game_id, play_id, device):
     """
     Animate model-only predictions for a test play without ground truth.
 
@@ -275,6 +278,9 @@ def animate_test_prediction(model, test_input_df, test_df, game_id, play_id):
         if query is None:
             continue
         with torch.no_grad():
+            # Move to device
+            query = query.to(device)
+            keys = keys.to(device)
             pred, _ = model(query, keys)
 
         dx, dy = pred[0].tolist()
