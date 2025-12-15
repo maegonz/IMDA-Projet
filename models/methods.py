@@ -1,7 +1,7 @@
 import torch
 import matplotlib.pyplot as plt
-from nfl_seq2seq import NFLSeq2SeqModel
-from nfl_attention import NFLAttentionModel
+from .nfl_seq2seq import NFLSeq2SeqModel
+from .nfl_attention import NFLAttentionModel
 from torch import nn, optim
 from torch.utils.data import DataLoader
 
@@ -51,12 +51,11 @@ def train_model(model: NFLAttentionModel | NFLSeq2SeqModel,
         print(f"Epoch {epoch+1} | Train Loss: {avg_loss:.4f}")
 
         if val_loader is not None:
-            avg_val_loss, avg_val_error = evaluate_model(model, val_loader, criterion, device)
+            avg_val_loss = evaluate_model(model, val_loader, criterion, device)
             val_losses.append(avg_val_loss)
 
-            print(f"Validation Loss: {avg_val_loss:.4f} | "
-                f"Validation Distance Error: {avg_val_error:.4f}")
-
+            print(f"Validation Loss: {avg_val_loss:.4f} | ")
+            
     return train_losses, val_losses
 
 
@@ -67,8 +66,6 @@ def evaluate_model(model: NFLAttentionModel | NFLSeq2SeqModel,
 
     model.eval()
     total_loss = 0
-    total_distance_error = 0
-    total_points = 0
 
     with torch.no_grad():
         for q, k, y in test_loader:
@@ -89,15 +86,8 @@ def evaluate_model(model: NFLAttentionModel | NFLSeq2SeqModel,
             loss = criterion(preds, y)
             total_loss += loss.item()
 
-            # L2 distance error per point
-            error = torch.sqrt(torch.sum((preds - y) ** 2, dim=2))
-            total_distance_error += error.sum().item()
-            total_points += error.numel()
-
     avg_loss = total_loss / len(test_loader)
-    avg_distance_error = (total_distance_error / total_points if total_points > 0 else 0)
 
-    print(f"Évaluation | Loss: {avg_loss:.4f} | "
-        f"Distance Error: {avg_distance_error:.4f}")
+    print(f"Évaluation | Loss: {avg_loss:.4f} | ")
 
-    return avg_loss, avg_distance_error
+    return avg_loss
