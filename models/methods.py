@@ -5,26 +5,31 @@ from nfl_attention import NFLAttentionModel
 from torch import nn, optim
 from torch.utils.data import DataLoader
 
+
 def train_model(model: NFLAttentionModel | NFLSeq2SeqModel,
                 train_loader: DataLoader,
                 criterion,
                 optimizer: optim.Optimizer,
                 device: torch.device,
-                num_epochs: int=20):
-    
-    # 4. Entraînement
-    print("🚀 Entraînement avec Normalisation...")
-    losses = []
+                val_loader: DataLoader = None,
+                num_epochs: int = 20):
 
-    model.train()
+    print("🚀 Entraînement avec Normalisation...")
+    train_losses = []
+    val_losses = []
+
     for epoch in range(num_epochs):
+        model.train()
         total_loss = 0
+
         for q, k, y in train_loader:
             optimizer.zero_grad()
+
             # Move to device
             q = q.to(device)
             k = k.to(device)
             y = y.to(device)
+
             if isinstance(model, NFLSeq2SeqModel):
                 # for seq2seq models, prepare decoder input
                 batch_size = y.size(0)
@@ -33,35 +38,39 @@ def train_model(model: NFLAttentionModel | NFLSeq2SeqModel,
                 preds = model(q, k, decoder_input)
             else:
                 preds, _ = model(q, k)
-            
+
             loss = criterion(preds, y)
             loss.backward()
             optimizer.step()
+
             total_loss += loss.item()
 
         avg_loss = total_loss / len(train_loader)
-        losses.append(avg_loss)
+        train_losses.append(avg_loss)
 
-        print(f"Epoch {epoch+1} | Loss: {avg_loss:.4f}")
-    
-    return losses
-    # plt.plot(losses)
-    # plt.title("Loss (Normalisée)")
-    # plt.xlabel("Epoch")
-    # plt.ylabel("Loss")
-    # plt.show()
+        print(f"Epoch {epoch+1} | Train Loss: {avg_loss:.4f}")
+
+        if val_loader is not None:
+            avg_val_loss, avg_val_error = evaluate_model(model, val_loader, criterion, device)
+            val_losses.append(avg_val_loss)
+
+            print(f"Validation Loss: {avg_val_loss:.4f} | "
+                f"Validation Distance Error: {avg_val_error:.4f}")
+
+    return train_losses, val_losses
 
 
 def evaluate_model(model: NFLAttentionModel | NFLSeq2SeqModel,
                    test_loader: DataLoader,
                    criterion,
                    device: torch.device):
-    
+
     model.eval()
     total_loss = 0
     total_distance_error = 0
     total_points = 0
-    with torch.no_grad():  # memory saving
+
+    with torch.no_grad():
         for q, k, y in test_loader:
             # Move to device
             q = q.to(device)
@@ -79,52 +88,16 @@ def evaluate_model(model: NFLAttentionModel | NFLSeq2SeqModel,
 
             loss = criterion(preds, y)
             total_loss += loss.item()
-            # L2 distance error between predicted and real positions
-            # sqrt((x_pred - x_real)^2 + (y_pred - y_real)^2)
-            error = torch.sqrt(torch.sum((preds - y)**2, dim=2))
+
+            # L2 distance error per point
+            error = torch.sqrt(torch.sum((preds - y) ** 2, dim=2))
             total_distance_error += error.sum().item()
-            total_points += error.numel() # Nombre total de points prédits
-            
+            total_points += error.numel()
+
     avg_loss = total_loss / len(test_loader)
-    avg_yards_error = total_distance_error / total_points if total_points > 0 else 0
-    
-    print(f"Évaluation | Loss: {avg_loss:.4f} | Erreur estimée: {avg_yards_error:.2f} yards")
-    return avg_loss, avg_yards_error
+    avg_distance_error = (total_distance_error / total_points if total_points > 0 else 0)
 
+    print(f"Évaluation | Loss: {avg_loss:.4f} | "
+        f"Distance Error: {avg_distance_error:.4f}")
 
-# def predict_future(self, src_rec, src_def, num_steps=10):
-#     """
-#     Fonction spéciale pour l'INFÉRENCE (Visualisation)
-#     Génère frame par frame sans connaitre la réponse.
-#     """
-#     self.eval()
-#     with torch.no_grad():
-#         # 1. Encodage (identique)
-#         query = self.receiver_embedding(src_rec).unsqueeze(1)
-#         keys = self.defender_embedding(src_def)
-#         memory, _ = self.encoder_attention(query, keys, keys)
-        
-#         # 2. Boucle de Génération
-#         # On commence avec un déplacement nul (0, 0)
-#         current_input = torch.zeros(src_rec.size(0), 1, 2).to(src_rec.device)
-#         predictions = []
-        
-#         for _ in range(num_steps):
-#             # Préparer l'entrée
-#             tgt_emb = self.decoder_input_embedding(current_input)
-#             tgt_emb = self.pos_encoder(tgt_emb)
-            
-#             # Le décodeur prédit la suite
-#             # Pas besoin de masque ici car on avance pas à pas
-#             out = self.decoder(tgt_emb, memory)
-            
-#             # On prend juste le dernier point prédit
-#             next_point = self.output_head(out[:, -1, :]).unsqueeze(1) # (Batch, 1, 2)
-            
-#             predictions.append(next_point)
-            
-#             # RÉCURSIVITÉ : Le point prédit devient l'entrée de la prochaine étape
-#             current_input = torch.cat([current_input, next_point], dim=1)
-        
-#         # On colle tout (Batch, num_steps, 2)
-#         return torch.cat(predictions, dim=1)
+    return avg_loss, avg_distance_error
