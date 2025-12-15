@@ -15,15 +15,17 @@ def train_model(model: NFLAttentionModel | NFLSeq2SeqModel,
                 val_loader: DataLoader = None,
                 num_epochs: int = 20):
 
-    print("🚀 Entraînement avec Normalisation...")
     train_losses = []
     val_losses = []
 
-    for epoch in tqdm(range(num_epochs)):
+    epoch_bar = tqdm(range(num_epochs), desc="Epochs")
+
+    for epoch in epoch_bar:
+        batch_bar = tqdm(train_loader, leave=False)
         model.train()
         total_loss = 0
 
-        for q, k, y in train_loader:
+        for q, k, y in batch_bar:
             optimizer.zero_grad()
 
             # Move to device
@@ -45,17 +47,18 @@ def train_model(model: NFLAttentionModel | NFLSeq2SeqModel,
             optimizer.step()
 
             total_loss += loss.item()
+            batch_bar.set_postfix(batch_loss=loss.item())
 
         avg_loss = total_loss / len(train_loader)
         train_losses.append(avg_loss)
-
-        # print(f"Epoch {epoch+1} | Train Loss: {avg_loss:.4f}")
+        epoch_bar.set_postfix(train_loss=avg_loss)
 
         if val_loader is not None:
             avg_val_loss = evaluate_model(model, val_loader, criterion, device)
             val_losses.append(avg_val_loss)
-
-            # print(f"Validation Loss: {avg_val_loss:.4f} | ")
+            epoch_bar.set_postfix(train_loss=avg_loss, val_loss=avg_val_loss)
+        else:
+            epoch_bar.set_postfix(train_loss=avg_loss)
 
     return train_losses, val_losses
 
@@ -88,7 +91,5 @@ def evaluate_model(model: NFLAttentionModel | NFLSeq2SeqModel,
             total_loss += loss.item()
 
     avg_loss = total_loss / len(test_loader)
-
-    print(f"Évaluation | Loss: {avg_loss:.4f} | ")
 
     return avg_loss
