@@ -9,8 +9,8 @@ def _pad_and_tensorize_keys(keys_list: List[List[float]], max_len: int = 22, fea
     Pad a variable-length list of per-player context features to a fixed
     length and convert it into a model-ready tensor.
 
-    This ensures the keys tensor always has shape ``(1, max_len, feature_dim)``
-    by zero-padding when fewer than ``max_len`` players are present and
+    This ensures the keys tensor always has shape (1, max_len, feature_dim)
+    by zero-padding when fewer than max_len players are present and
     truncating when more.
 
     Parameters
@@ -25,19 +25,59 @@ def _pad_and_tensorize_keys(keys_list: List[List[float]], max_len: int = 22, fea
     Returns
     -------
     torch.Tensor
-        Padded/truncated keys tensor of shape ``(1, max_len, feature_dim)``.
+        Padded/truncated keys tensor of shape (1, max_len, feature_dim).
     """
     while len(keys_list) < max_len:
         keys_list.append([0.0] * feature_dim)
 
     return torch.tensor(keys_list[:max_len], dtype=torch.float32).unsqueeze(0)
 
+def _player_historic(
+        df: pd.DataFrame,
+        game_id: int,
+        play_id: int,
+        nfl_id: int):
+    """
+    Retrieve the full play slice and the target player's recent history.
 
-def _prepare_core_input(df, game_id, play_id, target_nfl_id, num_frames_out=False):
+    Filters the play rows by game_id and play_id, then returns
+    the last HISTORY_SIZE frames for nfl_id if available.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        Full tracking dataframe.
+    game_id : int
+        Game identifier.
+    play_id : int
+        Play identifier.
+    nfl_id : int
+        Target player identifier.
+
+    Returns
+    -------
+    tuple[pandas.DataFrame, pandas.DataFrame] or None
+        (play_data, player_history) when sufficient history exists;
+        otherwise None.
+    """
+    # Filter full play frames ordered by time
+    play_data = df[(df['game_id'] == game_id) & (df['play_id'] == play_id)].sort_values('frame_id')
+    # Player track
+    player_track = play_data[play_data['nfl_id'] == nfl_id]
+
+    if len(player_track) < HISTORY_SIZE:
+        print(f"Less thant {HISTORY_SIZE} history for player {nfl_id} in game {game_id}, play {play_id}.")
+        # return play_data, player_track.iloc[-len(player_track):]
+        return None, None
+
+    return play_data, player_track.iloc[-HISTORY_SIZE:]
+
+
+def _prepare_core_input(df, game_id, play_id, target_id, num_frames_out=False):
     """
     Build model inputs for a target player from tracking data.
 
-    Constructs the receiver query by flattening the last ``HISTORY_SIZE``
+    Constructs the receiver query by flattening the last HISTORY_SIZE
     frames and the context keys from all other players at the final history
     frame. Optionally returns the number of output frames when available
     (for test-time inputs).
@@ -50,25 +90,26 @@ def _prepare_core_input(df, game_id, play_id, target_nfl_id, num_frames_out=Fals
         Game identifier.
     play_id : int
         Play identifier.
-    target_nfl_id : int
+    target_id : int
         Player (target) identifier.
     num_frames_out : bool, default False
-        When True, also return ``num_frames_out`` read from the current row.
+        When True, also return num_frames_out read from the current row.
 
     Returns
     -------
     tuple
-        If ``num_frames_out`` is False: ``(query, keys, start_pos)``.
-        If True: ``(query, keys, start_pos, num_frames_out)``.
-        Returns ``(None, None, None)`` or ``(None, None, None, None)`` if
+        If num_frames_out is False: (query, keys, start_pos).
+        If True: (query, keys, start_pos, num_frames_out).
+        Returns (None, None, None) or (None, None, None, None) if
         insufficient history for the target player.
     """
     # Filter play data
-    play_data, history_seq = _player_historic(df, game_id, play_id, target_nfl_id)
+    play_data, history_seq = _player_historic(df, game_id, play_id, target_id)
     if history_seq is None:
         return None, None, None, None if num_frames_out else (None, None, None)
     
     # Full play data for context lookups
+    print(play_data, history_seq)
     current_pos = history_seq.iloc[-1]  # Last frame (T)
 
     # --- A. Build receiver query (flattened history) ---
@@ -96,7 +137,7 @@ def _prepare_core_input(df, game_id, play_id, target_nfl_id, num_frames_out=Fals
     # --- B. Build context keys (teammates + opponents at last frame) ---
     current_frame_id = current_pos['frame_id']
     others = play_data[(play_data['frame_id'] == current_frame_id) & 
-                       (play_data['nfl_id'] != target_nfl_id)]
+                       (play_data['nfl_id'] != target_id)]
 
     keys_list = []  # List[List[float]] for context players
     side_target = current_pos['player_side']
@@ -131,85 +172,47 @@ def _prepare_core_input(df, game_id, play_id, target_nfl_id, num_frames_out=Fals
     return query, keys, start_pos
 
 
-def _player_historic(
-        df: pd.DataFrame,
-        game_id: int,
-        play_id: int,
-        nfl_id: int):
-    """
-    Retrieve the full play slice and the target player's recent history.
-
-    Filters the play rows by ``game_id`` and ``play_id``, then returns
-    the last ``HISTORY_SIZE`` frames for ``nfl_id`` if available.
-
-    Parameters
-    ----------
-    df : pandas.DataFrame
-        Full tracking dataframe.
-    game_id : int
-        Game identifier.
-    play_id : int
-        Play identifier.
-    nfl_id : int
-        Target player identifier.
-
-    Returns
-    -------
-    tuple[pandas.DataFrame, pandas.DataFrame] or None
-        ``(play_data, player_history)`` when sufficient history exists;
-        otherwise ``None``.
-    """
-    # Filter full play frames ordered by time
-    play_data = df[(df['game_id'] == game_id) & (df['play_id'] == play_id)].sort_values('frame_id')
-    # Player track
-    player_track = play_data[play_data['nfl_id'] == nfl_id]
-
-    if len(player_track) < HISTORY_SIZE:
-        return None
-
-    return play_data, player_track.iloc[-HISTORY_SIZE:]
-
 def prepare_input(
         df: pd.DataFrame,
         game_id: int,
         play_id: int,
-        target_nfl_id: int):
+        target_id: int):
     """
     Convenience wrapper to prepare training/inference inputs for a player.
 
-    Builds the query and keys tensors for ``target_nfl_id`` within the given
-    ``game_id`` and ``play_id``. Intended for cases where output length is
+    Builds the query and keys tensors for target_id within the given
+    game_id and play_id. Intended for cases where output length is
     determined by ground-truth and not required in inputs.
 
     Returns
     -------
     tuple
-        ``(query, keys, start_pos)`` where ``query`` has shape ``(1, 90)``,
-        ``keys`` has shape ``(1, 22, 9)``, and ``start_pos`` is the absolute
-        ``(x, y)`` position at the last history frame. Returns
-        ``(None, None, None)`` when insufficient history.
+        (query, keys, start_pos) where query has shape (1, 90),
+        keys has shape (1, 22, 9), and start_pos is the absolute
+        (x, y) position at the last history frame. Returns
+        (None, None, None) when insufficient history.
     """
-    return _prepare_core_input(df, game_id, play_id, target_nfl_id)
+    return _prepare_core_input(df, game_id, play_id, target_id)
 
 
 def prepare_test_input(
         df: pd.DataFrame,
         game_id: int,
         play_id: int,
-        target_nfl_id: int):
+        target_id: int):
     """
     Prepare inputs for test-time prediction including output length.
 
-    Similar to ``prepare_input`` but also returns ``num_frames_out`` derived
+    Similar to prepare_input but also returns num_frames_out derived
     from the final history row, representing how many future frames to
     predict for the target player.
 
     Returns
     -------
     tuple
-        ``(query, keys, start_pos, num_frames_out)`` or ``(None, None, None, None)``
-        when insufficient history. ``query`` shape: ``(1, 90)``; ``keys`` shape:
-        ``(1, 22, 9)``; ``start_pos``: absolute ``(x, y)``; ``num_frames_out``:
+        (query, keys, start_pos, num_frames_out) or (None, None, None, None)
+        when insufficient history. query shape: (1, 90); keys shape:
+        (1, 22, 9); start_pos: absolute (x, y); num_frames_out:
         integer count of future frames to generate.
     """    
-    return _prepare_core_input(df, game_id, play_id, target_nfl_id, num_frames_out=True)
+    return _prepare_core_input(df, game_id, play_id, target_id, num_frames_out=True)
