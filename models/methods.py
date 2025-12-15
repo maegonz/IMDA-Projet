@@ -1,5 +1,6 @@
 import torch
 import matplotlib.pyplot as plt
+from tqdm import tqdm
 from .nfl_seq2seq import NFLSeq2SeqModel
 from .nfl_attention import NFLAttentionModel
 from torch import nn, optim
@@ -18,7 +19,7 @@ def train_model(model: NFLAttentionModel | NFLSeq2SeqModel,
     train_losses = []
     val_losses = []
 
-    for epoch in range(num_epochs):
+    for epoch in tqdm(range(num_epochs)):
         model.train()
         total_loss = 0
 
@@ -48,14 +49,14 @@ def train_model(model: NFLAttentionModel | NFLSeq2SeqModel,
         avg_loss = total_loss / len(train_loader)
         train_losses.append(avg_loss)
 
-        print(f"Epoch {epoch+1} | Train Loss: {avg_loss:.4f}")
+        # print(f"Epoch {epoch+1} | Train Loss: {avg_loss:.4f}")
 
         if val_loader is not None:
             avg_val_loss = evaluate_model(model, val_loader, criterion, device)
             val_losses.append(avg_val_loss)
 
-            print(f"Validation Loss: {avg_val_loss:.4f} | ")
-            
+            # print(f"Validation Loss: {avg_val_loss:.4f} | ")
+
     return train_losses, val_losses
 
 
