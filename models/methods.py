@@ -1,12 +1,15 @@
 import torch
 import matplotlib.pyplot as plt
+from nfl_seq2seq import NFLSeq2SeqModel
+from nfl_attention import NFLAttentionModel
 from torch import nn, optim
 from torch.utils.data import DataLoader
 
-def train_model(model: nn.Module,
+def train_model(model: NFLAttentionModel | NFLSeq2SeqModel,
                 train_loader: DataLoader,
                 criterion,
                 optimizer: optim.Optimizer,
+                device: torch.device,
                 num_epochs: int=20):
     
     # 4. Entraînement
@@ -18,7 +21,19 @@ def train_model(model: nn.Module,
         total_loss = 0
         for q, k, y in train_loader:
             optimizer.zero_grad()
-            preds, _ = model(q, k)
+            # Move to device
+            q = q.to(device)
+            k = k.to(device)
+            y = y.to(device)
+            if isinstance(model, NFLSeq2SeqModel):
+                # for seq2seq models, prepare decoder input
+                batch_size = y.size(0)
+                start_token = torch.zeros(batch_size, 1, 2).to(device)
+                decoder_input = torch.cat([start_token, y[:, :-1, :]], dim=1)
+                preds = model(q, k, decoder_input)
+            else:
+                preds, _ = model(q, k)
+            
             loss = criterion(preds, y)
             loss.backward()
             optimizer.step()
@@ -27,35 +42,54 @@ def train_model(model: nn.Module,
         avg_loss = total_loss / len(train_loader)
         losses.append(avg_loss)
 
-        # La loss sera maintenant très petite (ex: 0.05) car tout est divisé
-        # Pour avoir l'erreur en Yards, on remultiplie par 10 (l'échelle du label)
-        # MSE -> RMSE -> * 10
-        rmse_yards = (avg_loss**0.5) * 10.0
-
-        print(f"Epoch {epoch+1} | Loss: {avg_loss:.4f} | Erreur estimée: {rmse_yards:.2f} yards")
-
-    plt.plot(losses)
-    plt.title("Loss (Normalisée)")
-    plt.xlabel("Epoch")
-    plt.ylabel("Loss")
-    plt.show()
+        print(f"Epoch {epoch+1} | Loss: {avg_loss:.4f}")
+    
+    return losses
+    # plt.plot(losses)
+    # plt.title("Loss (Normalisée)")
+    # plt.xlabel("Epoch")
+    # plt.ylabel("Loss")
+    # plt.show()
 
 
-def evaluate_model(model: nn.Module,
+def evaluate_model(model: NFLAttentionModel | NFLSeq2SeqModel,
                    test_loader: DataLoader,
-                   criterion):
+                   criterion,
+                   device: torch.device):
     
     model.eval()
     total_loss = 0
-    with torch.no_grad():
+    total_distance_error = 0
+    total_points = 0
+    with torch.no_grad():  # memory saving
         for q, k, y in test_loader:
-            preds, _ = model(q, k)
+            # Move to device
+            q = q.to(device)
+            k = k.to(device)
+            y = y.to(device)
+
+            if isinstance(model, NFLSeq2SeqModel):
+                # for seq2seq models, prepare decoder input
+                batch_size = y.size(0)
+                start_token = torch.zeros(batch_size, 1, 2).to(device)
+                decoder_input = torch.cat([start_token, y[:, :-1, :]], dim=1)
+                preds = model(q, k, decoder_input)
+            else:
+                preds, _ = model(q, k)
+
             loss = criterion(preds, y)
             total_loss += loss.item()
-
+            # L2 distance error between predicted and real positions
+            # sqrt((x_pred - x_real)^2 + (y_pred - y_real)^2)
+            error = torch.sqrt(torch.sum((preds - y)**2, dim=2))
+            total_distance_error += error.sum().item()
+            total_points += error.numel() # Nombre total de points prédits
+            
     avg_loss = total_loss / len(test_loader)
-    rmse_yards = (avg_loss**0.5) * 10.0
-    print(f"Évaluation | Loss: {avg_loss:.4f} | Erreur estimée: {rmse_yards:.2f} yards")
+    avg_yards_error = total_distance_error / total_points if total_points > 0 else 0
+    
+    print(f"Évaluation | Loss: {avg_loss:.4f} | Erreur estimée: {avg_yards_error:.2f} yards")
+    return avg_loss, avg_yards_error
 
 
 # def predict_future(self, src_rec, src_def, num_steps=10):
