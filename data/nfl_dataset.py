@@ -17,20 +17,20 @@ KEY_DIM = 9
 
 
 class NFLDataset(Dataset):
-    """Process play tracking CSVs into tensors for attention models.
+    """
+    Process play tracking CSVs into tensors for attention models.
 
     The dataset pairs historical player states (queries), surrounding context
     players (keys), and future displacements (labels) to train receiver position
     predictors.
     """
-    def __init__(
-        self,
-        input_dir: str = "./data/train/",
-        cache_file: Path | str = DEFAULT_DATASET_FILE,
-        use_cache: bool = True,
-        augment: bool = True,
-    ):
-        """Load or build the dataset.
+    def __init__(self,
+                 input_dir: str = "./data/train/",
+                 cache_file: Path | str = DEFAULT_DATASET_FILE,
+                 use_cache: bool = True,
+                 augment: bool = True,):
+        """
+        Load or build the dataset.
 
         Parameters
         ----------
