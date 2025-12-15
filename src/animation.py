@@ -134,14 +134,14 @@ def animate_prediction(model, df_in, df_out, game_id, play_id):
     """
     Animate predicted versus ground-truth trajectories for one play.
 
-    Uses ``df_in`` (input tracking) to render the input phase, then overlays
-    the model's predicted path against the true path from ``df_out`` for
+    Uses df_in (input tracking) to render the input phase, then overlays
+    the model's predicted path against the true path from df_out for
     the players that have labeled outputs in that play.
 
     Parameters
     ----------
     model : torch.nn.Module
-        Trained model that maps ``(query, keys)`` to predicted offsets.
+        Trained model that maps (query, keys) to predicted offsets.
     df_in : pandas.DataFrame
         Input tracking dataframe with history and context.
     df_out : pandas.DataFrame
@@ -162,7 +162,8 @@ def animate_prediction(model, df_in, df_out, game_id, play_id):
     if df_in.empty:
         return print("❌ input empty")
 
-    players_to_predict = df_out['nfl_id'].unique()
+    predict_data = df_out[(df_out['game_id'] == game_id) & (df_out['play_id'] == play_id)].sort_values('frame_id')
+    players_to_predict = predict_data['nfl_id'].unique()
 
     # COLORS
     player_colors = {}
@@ -216,9 +217,9 @@ def animate_test_prediction(model, test_input_df, test_df, game_id, play_id):
     """
     Animate model-only predictions for a test play without ground truth.
 
-    Renders the input phase from ``test_input_df`` and then shows the
-    predicted trajectories for target players determined from ``test_df``
-    (if available) or the input flag ``player_to_predict``.
+    Renders the input phase from test_input_df and then shows the
+    predicted trajectories for target players determined from test_df
+    (if available) or the input flag player_to_predict.
 
     Parameters
     ----------
